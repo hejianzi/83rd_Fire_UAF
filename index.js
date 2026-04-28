@@ -4485,7 +4485,8 @@ function pcaBindPanel() {
                     pcaState.rightEntries.forEach(function(re) { if (re.id === lEnt.id || re.name === lEnt.name) rEnt = re; });
                     dEl.setAttribute('data-mode', 'diff');
                     dEl.style.display = 'block';
-                    dEl.innerHTML = pcaRenderDiffHTML(rEnt ? rEnt.content : '', lEnt.content);
+                    // 第一参=旧（左），第二参=新（右）；之前两参传反了导致红绿颠倒、左右标签错位
+                    dEl.innerHTML = pcaRenderDiffHTML(lEnt.content, rEnt ? rEnt.content : '');
                 }
                 break;
             case 'fav-toggle-all':
