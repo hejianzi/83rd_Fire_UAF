@@ -1162,7 +1162,7 @@ function pcaBuildHTML(presetNames) {
     h += '</div>';
 
     h += '<div id="pca-content" class="pca-pad-x" style="flex:1;overflow-y:auto;padding:14px 22px;min-height:80px;">';
-    h += '<div style="text-align:center;padding:40px 0;color:'+pcaC.textDim+';font-size:14px;">请选择两个预设后点击「开始对比」/n主播我们做这个真有意义吗？</div></div>';
+    h += '<div style="text-align:center;padding:40px 0;color:'+pcaC.textDim+';font-size:14px;">请选择两个预设后点击「开始对比」</div></div>';
 
     // ====== Footer ======
     h += '<div id="pca-footer" class="pca-pad-x pca-toolbar" style="padding:12px 22px;border-top:1px solid '+pcaC.border+';display:none;justify-content:flex-end;gap:10px;flex-shrink:0;flex-wrap:wrap;">';
