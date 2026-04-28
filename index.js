@@ -1511,10 +1511,37 @@ function pcaEditAddPending(p) {
 }
 
 // 队列：切换启用
+// 第一次点击：把目标条目的 toggle 操作加入队列（启用 ↔ 禁用）。
+// 第二次点击（即点回原状态）：直接从队列中移除这条 toggle 操作，
+// 因为目标 enabled 等于条目本身的 enabled，无需保留无效的 pending 项。
 function pcaEditDoToggle(idx) {
     var entries = pcaGetEditTargetEntries();
     if (idx < 0 || idx >= entries.length) return;
     var entry = entries[idx];
+    // 检查队列里是否已有针对这个条目的 toggle 项
+    var existingIdx = -1;
+    for (var i = 0; i < pcaState.editPending.length; i++) {
+        var pi = pcaState.editPending[i];
+        if (pi.action === 'toggle' && (pi.entryId === entry.id || pi.targetId === entry.id)) {
+            existingIdx = i;
+            break;
+        }
+    }
+    if (existingIdx >= 0) {
+        // 二次点击 → 撤销该 toggle 操作（回到初始状态）
+        pcaState.editPending.splice(existingIdx, 1);
+        // 同步清理 undo 栈里指向被删项之后位置的索引（避免撤销错位）
+        pcaState.editUndoStack = pcaState.editUndoStack.filter(function(u){
+            return !(u.action === 'add' && u.index === existingIdx);
+        });
+        pcaState.editUndoStack.forEach(function(u){
+            if (u.action === 'add' && u.index > existingIdx) u.index--;
+        });
+        pcaRenderEdit();
+        toastr.info('已从队列移除：' + (entry.enabled ? '禁用' : '启用') + ' ' + entry.name);
+        return;
+    }
+    // 首次点击 → 加入队列
     pcaEditAddPending({ action:'toggle', targetId: entry.id, entryId: entry.id, entryName: entry.name, enabled: !entry.enabled });
     pcaRenderEdit();
     toastr.success('已加入队列：' + (!entry.enabled ? '启用' : '禁用') + ' ' + entry.name);
@@ -1547,6 +1574,8 @@ function pcaEditMoveTo(fromIdx, toIdx) {
 }
 
 // 队列：新建空白条目
+// 注意：这里不预先入队，只打开编辑器；只有用户点"提交"（pcaEditorSave 的 _isNew 分支）才会真正入队。
+// 这样用户在编辑器里点"取消"或丢弃修改时，不会留下垃圾 pending 项。
 function pcaEditDoNewEntry() {
     var newId = pcaGenEntryId();
     var newEntry = {
@@ -1558,15 +1587,6 @@ function pcaEditDoNewEntry() {
         marker: false,
         _isNew: true,
     };
-    pcaEditAddPending({
-        action:'new',
-        targetId: newId,
-        entryId: newId,
-        entryName: newEntry.name,
-        entry: newEntry,
-        insertIndex: pcaGetEditTargetEntries().length,
-    });
-    pcaRenderEdit();
     pcaOpenEditor(newEntry, { isEditTarget: true });
 }
 
@@ -2223,6 +2243,8 @@ function pcaOpenEditor(entry, options) {
         fieldsView: false,
         // 条目编辑模式：true 时保存进 editPending（自改 / 反向），false 时走 migrate 流程
         isEditTarget: !!options.isEditTarget,
+        // 条目编辑模式下，记录"目标在哪一侧"，仅用于标题展示（与 activeVersion 解耦）
+        editTargetSide: !!options.isEditTarget ? (pcaState.editTarget || 'right') : '',
     };
 
     var ov = doc.createElement('div');
@@ -2544,8 +2566,18 @@ function pcaEditorRefreshContent() {
         pcaEditorUpdateStats();
     }
     if (lbl) {
-        if (es.activeVersion === 'left') lbl.innerHTML = '<span style="color:'+pcaC.text+';font-weight:600;">正在编辑：</span><span style="color:'+pcaC.pink+';font-weight:600;">📁 旧版（左）</span>';
-        else lbl.innerHTML = '<span style="color:'+pcaC.text+';font-weight:600;">正在编辑：</span><span style="color:'+pcaC.gold+';font-weight:600;">📂 新版（右）</span>';
+        // 条目编辑模式下，按 editTargetSide 决定标题，让新建/编辑的条目显示真正的目标预设
+        if (es.isEditTarget) {
+            if (es.editTargetSide === 'left') {
+                lbl.innerHTML = '<span style="color:'+pcaC.text+';font-weight:600;">正在编辑：</span><span style="color:'+pcaC.pink+';font-weight:600;">📁 '+pcaEsc(pcaState.leftName||'旧预设')+'（左）</span>';
+            } else {
+                lbl.innerHTML = '<span style="color:'+pcaC.text+';font-weight:600;">正在编辑：</span><span style="color:'+pcaC.gold+';font-weight:600;">📂 '+pcaEsc(pcaState.rightName||'新预设')+'（右）</span>';
+            }
+        } else if (es.activeVersion === 'left') {
+            lbl.innerHTML = '<span style="color:'+pcaC.text+';font-weight:600;">正在编辑：</span><span style="color:'+pcaC.pink+';font-weight:600;">📁 旧版（左）</span>';
+        } else {
+            lbl.innerHTML = '<span style="color:'+pcaC.text+';font-weight:600;">正在编辑：</span><span style="color:'+pcaC.gold+';font-weight:600;">📂 新版（右）</span>';
+        }
     }
     pcaEditorRefreshReference();
 }
@@ -4476,3 +4508,5 @@ pcaSetupButton();
 pcaLoadNotes();
 pcaLoadFavGroups();
 pcaLog('v2.7 就绪');
+
+
