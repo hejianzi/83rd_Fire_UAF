@@ -1,5 +1,3 @@
-// ==== 美化主题包接口（用户自定义钩子，可在脚本顶部直接赋值覆盖任意 token）====
-// 示例： var PCA_USER_THEME = { name:'我的', colors:{ primary:'#ff0080' } };
 var PCA_USER_THEME = null;
 
 // ==== 主题数据 ====
