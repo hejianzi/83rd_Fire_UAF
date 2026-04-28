@@ -1,3 +1,11 @@
+// ==UserScript==
+// @name         预设对比助手
+// @description  对比两个Chat Completion预设的prompt条目开关差异 + 条目迁移
+// @version      2.7.0
+// ==/UserScript==
+
+// ==== 美化主题包接口（用户自定义钩子，可在脚本顶部直接赋值覆盖任意 token）====
+// 示例： var PCA_USER_THEME = { name:'我的', colors:{ primary:'#ff0080' } };
 var PCA_USER_THEME = null;
 
 // ==== 主题数据 ====
