@@ -1,13 +1,4486 @@
-{
-  "type": "script",
-  "enabled": true,
-  "name": "预设对比助手 v2.7.0",
-  "id": "297dc93a-b68d-4884-9eda-02b22962b19b",
-  "content": "// ==UserScript==\n// @name         预设对比助手\n// @description  对比两个Chat Completion预设的prompt条目开关差异 + 条目迁移\n// @version      2.7.0\n// ==/UserScript==\n\n// ==== 美化主题包接口（用户自定义钩子，可在脚本顶部直接赋值覆盖任意 token）====\n// 示例： var PCA_USER_THEME = { name:'我的', colors:{ primary:'#ff0080' } };\nvar PCA_USER_THEME = null;\n\n// ==== 主题数据 ====\n// 设计原则：颜色 token 与\"语义\"绑定，不与\"角色\"绑定。新增主题只需在 pcaThemes 里加一份对象。\n// 字段约定：sheen 字段为流光主色（一般等于 accent），用于按钮/标题金光扫过动画。\nvar pcaThemes = {\n    // 苹果（贝利尔印象色：黑底微紫 + 饱和暗血红 + 少量微紫白；金色仅做罕见装饰）\n    'apple': {\n        name: '苹果',\n        colors: {\n            bg:'#08080c',          // 近黑，仅一丝冷调\n            surface:'#101015',     // 黑色微泛紫\n            surfaceHi:'#1a1620',   // 黑+极少量紫\n            border:'#2a2530',      // 灰紫黑边\n            borderHi:'#4a3e55',    // 暗紫灰高亮边（边缘还能看出紫）\n            primary:'#8a1a2e',     // 暗血红（主操作色，饱和但暗）\n            primaryDim:'#6e1626',  // 深血红（渐变末端 / 边框）\n            accent:'#a8243a',      // 焦血红（hover 提亮，仍属暗红）\n            accentDim:'#6e1626',\n            text:'#ece8f4',        // 微紫白（贝利尔发色）\n            textDim:'#7a7388',     // 中紫灰\n            textOff:'#3a3540',     // 失效灰紫\n            danger:'#c54052',      // 错误（比 primary 略亮以区分）\n            warning:'#8a7448',     // 暗金（罕用警示）\n            success:'#5e8a6f',     // 暗绿（去饱和）\n            info:'#7a6890',        // 暗紫罗兰\n            infoDim:'#4a3e55',\n            input:'#0c0c12',\n        },\n        fonts: { sans:\"'Segoe UI',system-ui,-apple-system,sans-serif\", mono:\"Consolas,Menlo,monospace\" },\n        sheen: '#b8243a',          // 流光红（动画扫过的瞬间亮起）\n    },\n    // 月光：深夜星空 + 月光银蓝 + 提亮符文金\n    'moonlight': {\n        name: '月光',\n        colors: {\n            bg:'#0d0e1a', surface:'#171a2e', surfaceHi:'#1f2340',\n            border:'#262a45', borderHi:'#3a4068',\n            primary:'#e8d394', primaryDim:'#b89e60',         // 提亮符文金（清透）\n            accent:'#9eb4d8', accentDim:'#6c81a8',           // 月光银蓝\n            text:'#e8e6f0', textDim:'#7c809a', textOff:'#3a3e58',\n            danger:'#c5546b', warning:'#e8c060', success:'#7eb695',\n            info:'#9eb4d8', infoDim:'#6c81a8',\n            input:'#0f1124',\n        },\n        fonts: { sans:\"'Segoe UI',system-ui,-apple-system,sans-serif\", mono:\"Consolas,Menlo,monospace\" },\n        sheen: '#f5e5b8',          // 流光银金（更亮）\n    },\n};\n\n// 旧主题名兼容映射（避免老用户 localStorage 里的 'default'/'magic' 失效）\nvar pcaThemeAliases = { 'default':'apple', 'magic':'moonlight' };\n\n// 全局颜色对象 — 由 pcaApplyTheme 动态填充。下方的 default 值仅在主题应用前作为兜底，\n// 兼容旧字段名（card/card2/pink/pinkDim/gold/goldDim/dim/off/migrate*/diff*）。\nvar pcaC = {};\n\nfunction pcaApplyTheme(name, opts) {\n    opts = opts || {};\n    // 旧名兼容\n    if (pcaThemeAliases && pcaThemeAliases[name]) name = pcaThemeAliases[name];\n    var theme = pcaThemes[name] || pcaThemes['apple'];\n    // 用户钩子覆盖\n    if (PCA_USER_THEME && PCA_USER_THEME.colors) {\n        var merged = {};\n        Object.keys(theme.colors).forEach(function(k){ merged[k] = theme.colors[k]; });\n        Object.keys(PCA_USER_THEME.colors).forEach(function(k){ merged[k] = PCA_USER_THEME.colors[k]; });\n        theme = { name:(PCA_USER_THEME.name||theme.name), colors:merged, fonts:(PCA_USER_THEME.fonts||theme.fonts) };\n    }\n    var c = theme.colors;\n    // 写入新语义 token\n    pcaC.bg=c.bg; pcaC.surface=c.surface; pcaC.surfaceHi=c.surfaceHi;\n    pcaC.border=c.border; pcaC.borderHi=c.borderHi;\n    pcaC.primary=c.primary; pcaC.primaryDim=c.primaryDim;\n    pcaC.accent=c.accent; pcaC.accentDim=c.accentDim;\n    pcaC.text=c.text; pcaC.textDim=c.textDim; pcaC.textOff=c.textOff;\n    pcaC.danger=c.danger; pcaC.warning=c.warning; pcaC.success=c.success;\n    pcaC.info=c.info; pcaC.infoDim=c.infoDim; pcaC.input=c.input;\n    // 兼容旧字段名（避免一次性替换全文 ~30 处引用）\n    pcaC.card=c.surface; pcaC.card2=c.surfaceHi;\n    pcaC.pink=c.primary; pcaC.pinkDim=c.primaryDim;\n    pcaC.gold=c.accent; pcaC.goldDim=c.accentDim;\n    pcaC.dim=c.textDim; pcaC.off=c.textOff;\n    pcaC.migrate=c.info; pcaC.migrateDim=c.infoDim;\n    pcaC.migrateBg='rgba('+pcaHexToRgb(c.info)+',0.1)';\n    pcaC.migrateBorder='rgba('+pcaHexToRgb(c.info)+',0.3)';\n    pcaC.diffAdd='rgba('+pcaHexToRgb(c.success)+',0.15)';\n    pcaC.diffAddBorder='rgba('+pcaHexToRgb(c.success)+',0.4)';\n    pcaC.diffDel='rgba('+pcaHexToRgb(c.danger)+',0.15)';\n    pcaC.diffDelBorder='rgba('+pcaHexToRgb(c.danger)+',0.4)';\n    pcaC.diffAddText=c.success; pcaC.diffDelText=c.danger;\n    // 字体\n    pcaC._fontSans = (theme.fonts && theme.fonts.sans) || \"'Segoe UI',sans-serif\";\n    pcaC._fontMono = (theme.fonts && theme.fonts.mono) || \"Consolas,monospace\";\n    // 流光色\n    pcaC.sheen = theme.sheen || c.primary;\n    pcaC._themeName = name;\n    pcaC._themeLabel = theme.name;\n    // 持久化\n    if (!opts.skipPersist) { try { localStorage.setItem('pca_theme', name); } catch(e) {} }\n    // 重新注入 CSS\n    if (typeof pcaInjectCSS === 'function') pcaInjectCSS();\n    // 重渲染当前 UI\n    if (opts.rerender !== false && typeof pcaState !== 'undefined' && pcaState && pcaState.compared) {\n        try {\n            if (pcaState.activeTab === 'migrate' && typeof pcaRenderMigrate === 'function') pcaRenderMigrate();\n            else if (pcaState.activeTab === 'edit' && typeof pcaRenderEdit === 'function') pcaRenderEdit();\n            else if (typeof pcaRenderDiffs === 'function') pcaRenderDiffs();\n        } catch(e) {}\n    }\n}\nfunction pcaHexToRgb(hex) {\n    hex = (hex || '').replace('#','');\n    if (hex.length === 3) hex = hex.split('').map(function(c){return c+c;}).join('');\n    var n = parseInt(hex, 16);\n    return ((n>>16)&255)+','+((n>>8)&255)+','+(n&255);\n}\n// 启动时应用持久化主题\n(function(){\n    var saved = null;\n    try { saved = localStorage.getItem('pca_theme'); } catch(e) {}\n    if (saved && pcaThemeAliases[saved]) saved = pcaThemeAliases[saved];\n    pcaApplyTheme((saved && pcaThemes[saved]) ? saved : 'apple', { skipPersist:true, rerender:false });\n})();\n\nvar pcaLogs = [];\nfunction pcaLog(msg) {\n    var t = new Date().toLocaleTimeString('zh-CN',{hour12:false});\n    pcaLogs.push(t + ' ' + msg);\n    if (pcaLogs.length > 300) pcaLogs.splice(0, pcaLogs.length - 300);\n    console.log('[预设对比]', msg);\n}\nfunction pcaEsc(s) { var d = document.createElement('div'); d.textContent = s||''; return d.innerHTML; }\nfunction pcaAttr(s) { return (s||'').replace(/&/g,'&amp;').replace(/\"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }\nfunction pcaGetDoc() { try { return window.parent.document; } catch(e) { return document; } }\nfunction pcaGetWin() { try { return window.parent; } catch(e) { return window; } }\nfunction pcaGetJQ() {\n    var w = pcaGetWin();\n    if (w && (w.jQuery || w.$)) return w.jQuery || w.$;\n    return (typeof jQuery !== 'undefined') ? jQuery : ((typeof $ !== 'undefined') ? $ : null);\n}\nfunction pcaQ(sel) { return pcaGetDoc().querySelector(sel); }\nfunction pcaGetHeaders() {\n    var h = {'Content-Type':'application/json'};\n    try { var ctx = SillyTavern.getContext(); if (typeof ctx.getRequestHeaders === 'function') Object.assign(h, ctx.getRequestHeaders()); } catch(e) {}\n    return h;\n}\n\nfunction pcaDiffLines(oldText, newText) {\n    var oldLines = (oldText || '').split('\\n');\n    var newLines = (newText || '').split('\\n');\n    var m = oldLines.length, n = newLines.length;\n    if (m * n > 500000) return pcaDiffSimple(oldLines, newLines);\n    var dp = [];\n    for (var i = 0; i <= m; i++) { dp[i] = []; for (var j = 0; j <= n; j++) dp[i][j] = 0; }\n    for (var i2 = 1; i2 <= m; i2++) {\n        for (var j2 = 1; j2 <= n; j2++) {\n            if (oldLines[i2-1] === newLines[j2-1]) dp[i2][j2] = dp[i2-1][j2-1] + 1;\n            else dp[i2][j2] = Math.max(dp[i2-1][j2], dp[i2][j2-1]);\n        }\n    }\n    var result = [];\n    var oi = m, ni = n;\n    while (oi > 0 || ni > 0) {\n        if (oi > 0 && ni > 0 && oldLines[oi-1] === newLines[ni-1]) { result.unshift({type:'same',text:oldLines[oi-1]}); oi--; ni--; }\n        else if (ni > 0 && (oi === 0 || dp[oi][ni-1] >= dp[oi-1][ni])) { result.unshift({type:'add',text:newLines[ni-1]}); ni--; }\n        else { result.unshift({type:'del',text:oldLines[oi-1]}); oi--; }\n    }\n    return result;\n}\nfunction pcaDiffSimple(oldLines, newLines) {\n    var result = [];\n    var oi=0, ni=0;\n    while (oi < oldLines.length || ni < newLines.length) {\n        if (oi < oldLines.length && ni < newLines.length && oldLines[oi] === newLines[ni]) { result.push({type:'same',text:oldLines[oi]}); oi++; ni++; }\n        else if (oi < oldLines.length) { result.push({type:'del',text:oldLines[oi]}); oi++; }\n        else if (ni < newLines.length) { result.push({type:'add',text:newLines[ni]}); ni++; }\n    }\n    return result;\n}\nfunction pcaIsRewrite(diffResult) {\n    if (!diffResult.length) return false;\n    var same=0, total=0;\n    diffResult.forEach(function(d){ if(d.text.trim()){total++;if(d.type==='same')same++;} });\n    return total>0 && (same/total)<0.2;\n}\nfunction pcaHasContentDiff(leftContent, rightContent) {\n    return (leftContent||'') !== (rightContent||'');\n}\nfunction pcaRenderDiffHTML(leftContent, rightContent) {\n    if (!leftContent && !rightContent) return '<div style=\"color:#555;padding:8px;\">（两侧都是空内容）</div>';\n    if (!leftContent) return '<div style=\"padding:8px;\"><div style=\"color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;\">\\ud83d\\udcdd 左侧为空，右侧全部为新增内容：</div><div style=\"background:'+pcaC.diffAdd+';border-left:3px solid '+pcaC.diffAddBorder+';padding:6px 10px;border-radius:4px;font-size:12px;line-height:1.6;color:'+pcaC.diffAddText+';white-space:pre-wrap;word-break:break-all;\">'+pcaEsc(rightContent)+'</div></div>';\n    if (!rightContent) return '<div style=\"padding:8px;\"><div style=\"color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;\">\\ud83d\\udcdd 右侧为空，左侧全部内容已删除：</div><div style=\"background:'+pcaC.diffDel+';border-left:3px solid '+pcaC.diffDelBorder+';padding:6px 10px;border-radius:4px;font-size:12px;line-height:1.6;color:'+pcaC.diffDelText+';white-space:pre-wrap;word-break:break-all;\">'+pcaEsc(leftContent)+'</div></div>';\n    if (leftContent === rightContent) return '<div style=\"color:'+pcaC.success+';padding:8px;font-size:13px;\">✓ 内容完全相同</div>';\n    var diff = pcaDiffLines(leftContent, rightContent);\n    var rewrite = pcaIsRewrite(diff);\n    if (rewrite) {\n        return '<div style=\"padding:8px;\"><div style=\"color:'+pcaC.gold+';font-size:11px;margin-bottom:8px;font-weight:600;\">⚠️ 内容几乎完全重写（相同部分＜20%），左右并排展示：</div><div style=\"display:flex;gap:10px;\"><div style=\"flex:1;min-width:0;\"><div style=\"font-size:10px;color:'+pcaC.diffDelText+';margin-bottom:4px;font-weight:600;\">◀ 左侧（旧）</div><div style=\"background:'+pcaC.diffDel+';border:1px solid '+pcaC.diffDelBorder+';border-radius:6px;padding:8px 10px;max-height:250px;overflow-y:auto;font-size:11px;line-height:1.6;color:'+pcaC.diffDelText+';white-space:pre-wrap;word-break:break-all;\">'+pcaEsc(leftContent)+'</div></div><div style=\"flex:1;min-width:0;\"><div style=\"font-size:10px;color:'+pcaC.diffAddText+';margin-bottom:4px;font-weight:600;\">▶ 右侧（新）</div><div style=\"background:'+pcaC.diffAdd+';border:1px solid '+pcaC.diffAddBorder+';border-radius:6px;padding:8px 10px;max-height:250px;overflow-y:auto;font-size:11px;line-height:1.6;color:'+pcaC.diffAddText+';white-space:pre-wrap;word-break:break-all;\">'+pcaEsc(rightContent)+'</div></div></div></div>';\n    }\n    var html = '<div style=\"padding:8px;\"><div style=\"color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;\">\\ud83d\\udcdd 内容差异（<span style=\"color:'+pcaC.diffDelText+'\">红色=删除</span> <span style=\"color:'+pcaC.diffAddText+'\">绿色=新增</span>）：</div><div style=\"background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:8px 0;max-height:300px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;\">';\n    diff.forEach(function(d){\n        var prefix,bg,color;\n        if(d.type==='add'){prefix='+';bg=pcaC.diffAdd;color=pcaC.diffAddText;}\n        else if(d.type==='del'){prefix='-';bg=pcaC.diffDel;color=pcaC.diffDelText;}\n        else{prefix=' ';bg='transparent';color=pcaC.dim;}\n        html+='<div style=\"background:'+bg+';padding:1px 10px;color:'+color+';white-space:pre-wrap;word-break:break-all;\"><span style=\"display:inline-block;width:16px;opacity:0.6;user-select:none;\">'+prefix+'</span>'+pcaEsc(d.text||' ')+'</div>';\n    });\n    html += '</div>';\n    var ac=0,dc=0; diff.forEach(function(d){if(d.type==='add')ac++;if(d.type==='del')dc++;});\n    html += '<div style=\"margin-top:6px;font-size:11px;color:'+pcaC.dim+';\">';\n    if(ac)html+='<span style=\"color:'+pcaC.diffAddText+';\">+'+ac+' 行新增</span> ';\n    if(dc)html+='<span style=\"color:'+pcaC.diffDelText+';\">-'+dc+' 行删除</span>';\n    html += '</div></div>';\n    return html;\n}\n\nvar pcaState = {\n    leftName:'', rightName:'',\n    leftEntries:[], rightEntries:[],\n    diffs:[], newItems:[],\n    rightPresetData:null,\n    leftPresetData:null,\n    originalValues:{},\n    activeTab:'diff', compared:false,\n    allPresets:null,\n    migrateSearch:'',\n    migrateSelected:{},\n    migrateNotes:[],\n    migrateFavActive:false,\n    migratePending:[],\n    migrateUndoStack:[],\n    migrateFilterStatus:'all',\n    migrateFilterDiff:'all',\n    migrateQueueExpanded:false,\n    migrateFavGroups:{},\n    activeFavGroupId:'',\n    confHelpExpanded:false,\n    editorClipText:'',\n    editorClipFrom:'',\n    editorState:null,\n    editorDrafts:{},\n    // 编辑器软换行开关：true = 自动换行（推荐，对手机和长行友好），false = 不换行（保留代码风格横向滚动）\n    editorWrap:(function(){try{var v=localStorage.getItem('pca_editor_wrap_v1');return v===null?true:v==='1';}catch(e){return true;}})(),\n    // ====== 条目编辑模块（单预设自改 / 反向迁移）======\n    editTarget:'right',          // 'left' | 'right'：当前要编辑哪个预设\n    editPending:[],              // 待修改队列：{ action: 'new' | 'overwrite' | 'delete' | 'reorder' | 'toggle', ... }\n    editUndoStack:[],\n    editSearch:'',\n    editOnlyNew:false,           // 仅显示「目标独有」的新条目（替代旧的\"新增条目\"标签）\n    editQueueExpanded:false,     // 待修改队列是否展开\n};\n\nvar PCA_NOTES_KEY = 'pca_migrate_notes_v1';\nvar PCA_EDITOR_WRAP_KEY = 'pca_editor_wrap_v1';\nfunction pcaLoadNotes() {\n    try { var s = localStorage.getItem(PCA_NOTES_KEY); if(s) pcaState.migrateNotes = JSON.parse(s); else pcaState.migrateNotes = []; } catch(e) { pcaState.migrateNotes = []; }\n}\nfunction pcaSaveNotes() {\n    try { localStorage.setItem(PCA_NOTES_KEY, JSON.stringify(pcaState.migrateNotes)); } catch(e) {}\n}\n\nfunction pcaInjectCSS() {\n    var doc = pcaGetDoc();\n    var old = doc.querySelector('#pca-style');\n    if (old) old.remove();\n    var s = doc.createElement('style');\n    s.id = 'pca-style';\n    // CSS 变量定义 — 让所有 .pca-* 样式自动跟随主题\n    var rootVars = ':root,#pca-root{'\n        + '--pca-bg:'+pcaC.bg+';'\n        + '--pca-surface:'+pcaC.surface+';'\n        + '--pca-surface-hi:'+pcaC.surfaceHi+';'\n        + '--pca-border:'+pcaC.border+';'\n        + '--pca-border-hi:'+pcaC.borderHi+';'\n        + '--pca-primary:'+pcaC.primary+';'\n        + '--pca-primary-dim:'+pcaC.primaryDim+';'\n        + '--pca-accent:'+pcaC.accent+';'\n        + '--pca-accent-dim:'+pcaC.accentDim+';'\n        + '--pca-text:'+pcaC.text+';'\n        + '--pca-text-dim:'+pcaC.textDim+';'\n        + '--pca-text-off:'+pcaC.textOff+';'\n        + '--pca-danger:'+pcaC.danger+';'\n        + '--pca-warning:'+pcaC.warning+';'\n        + '--pca-success:'+pcaC.success+';'\n        + '--pca-info:'+pcaC.info+';'\n        + '--pca-info-dim:'+pcaC.infoDim+';'\n        + '--pca-input:'+pcaC.input+';'\n        + '--pca-sheen:'+pcaC.sheen+';'\n        + '--pca-font-sans:'+pcaC._fontSans+';'\n        + '--pca-font-mono:'+pcaC._fontMono+';'\n        + '--pca-radius-sm:6px;--pca-radius-md:10px;--pca-radius-lg:14px;'\n        + '--pca-space-xs:4px;--pca-space-sm:8px;--pca-space-md:12px;--pca-space-lg:16px;--pca-space-xl:22px;'\n        + '--pca-shadow-sm:0 2px 8px rgba(0,0,0,0.35);'\n        + '--pca-shadow-md:0 4px 16px rgba(0,0,0,0.5);'\n        + '--pca-shadow-lg:0 8px 40px rgba(0,0,0,0.6);'\n        + '--pca-pop-w:min(420px,96vw);'\n        + '--pca-modal-w:min(520px,96vw);'\n        + '}';\n    s.textContent = rootVars + '\\n' + [\n        'dialog.popup:has(#pca-root){background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important;margin:auto!important;width:fit-content!important;min-width:0!important;max-width:96vw!important;height:fit-content!important;min-height:0!important;max-height:96vh!important;max-height:96dvh!important;overflow:visible!important;inset:0!important}',\n        'dialog.popup:has(#pca-root)::backdrop{background:rgba(0,0,0,0.65)!important}',\n        'dialog.popup:has(#pca-root) .popup-body{background:transparent!important;border:none!important;padding:0!important;margin:0!important;display:contents!important}',\n        'dialog.popup:has(#pca-root) .popup-content{background:transparent!important;padding:0!important;margin:0!important}',\n        'dialog.popup:has(#pca-root) .popup-controls{display:none!important}',\n        '#pca-root [data-pca-action]{cursor:pointer!important}',\n        '#pca-root [data-pca-action]:hover{opacity:0.85}',\n        // 让表单元素也继承主题字体\n        '#pca-root input,#pca-root select,#pca-root button,#pca-root textarea{font-family:inherit!important}',\n        // ====== Header 标题区（无毛玻璃，纯实色 + 底部一道暗红光带）======\n        '#pca-root .pca-header-bar{position:relative;background:'+pcaC.bg+'!important}',\n        '#pca-root .pca-header-bar::after{content:\"\";position:absolute;left:22px;right:22px;bottom:0;height:1px;background:linear-gradient(90deg,transparent 0%,'+pcaC.primaryDim+' 25%,'+pcaC.sheen+' 50%,'+pcaC.primaryDim+' 75%,transparent 100%);opacity:0.7;pointer-events:none}',\n        // ====== 标题字体（祭坛石碑：20px / 800 / 字间距）======\n        '#pca-root .pca-title{font-size:20px;font-weight:800;letter-spacing:1px;color:'+pcaC.text+';line-height:1.1;white-space:nowrap}',\n        '#pca-root .pca-subtitle{font-size:10px;font-weight:500;color:'+pcaC.textDim+';letter-spacing:1.5px;text-transform:uppercase;margin-top:3px;line-height:1}',\n        // 标题静态渐变（无动画，避免 background-clip:text 动画卡顿）\n        '#pca-root .pca-title-gradient{background:linear-gradient(90deg,'+pcaC.text+' 0%,'+pcaC.text+' 25%,'+pcaC.accent+' 50%,'+pcaC.text+' 75%,'+pcaC.text+' 100%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}',\n        // ====== Header 工具区按钮（无边框，hover 才出红色下划线）======\n        '#pca-root .pca-tool-link{display:inline-block;font-size:12px;color:'+pcaC.textDim+';padding:4px 6px;cursor:pointer;border:none;background:transparent;position:relative;line-height:1.2;transition:color .15s ease}',\n        '#pca-root .pca-tool-link::after{content:\"\";position:absolute;left:6px;right:6px;bottom:2px;height:1px;background:'+pcaC.primary+';transform:scaleX(0);transform-origin:center;transition:transform .15s ease}',\n        '#pca-root .pca-tool-link:hover{color:'+pcaC.accent+'}',\n        '#pca-root .pca-tool-link:hover::after{transform:scaleX(1)}',\n        '#pca-root .pca-tool-select{font-size:11px;color:'+pcaC.textDim+';background:transparent;padding:4px 6px;border:none;outline:none;cursor:pointer;letter-spacing:0.3px}',\n        '#pca-root .pca-tool-select:hover{color:'+pcaC.accent+'}',\n        // ====== 幽灵按钮（次要动作）— hover 磨砂玻璃浮起 ======\n        '#pca-root .pca-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;font-size:13px;font-weight:600;background:transparent;color:'+pcaC.textDim+';border:1px solid '+pcaC.border+';border-radius:3px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease,color .2s ease,background .2s ease,backdrop-filter .2s ease;white-space:nowrap;line-height:1.2;font-family:inherit;outline:none;-webkit-text-fill-color:'+pcaC.textDim+';letter-spacing:0.3px;will-change:transform}',\n        '#pca-root .pca-btn:hover{border-color:'+pcaC.accent+';color:'+pcaC.accent+';-webkit-text-fill-color:'+pcaC.accent+';background:rgba(255,255,255,0.05);backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);transform:translateY(-1px);box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.primary)+',0.18),0 0 0 1px rgba(255,255,255,0.04) inset}',\n        '#pca-root .pca-btn:active{transform:translateY(0);box-shadow:0 2px 6px rgba('+pcaHexToRgb(pcaC.primary)+',0.12)}',\n        '#pca-root .pca-btn-danger{color:'+pcaC.danger+';border-color:rgba('+pcaHexToRgb(pcaC.danger)+',0.4);-webkit-text-fill-color:'+pcaC.danger+'}',\n        '#pca-root .pca-btn-danger:hover{border-color:'+pcaC.danger+';color:'+pcaC.danger+';-webkit-text-fill-color:'+pcaC.danger+';background:rgba(255,255,255,0.05);backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);transform:translateY(-1px);box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.danger)+',0.22),0 0 0 1px rgba(255,255,255,0.04) inset}',\n        // ====== 输入控件（input/textarea/select）— hover/focus 磨砂玻璃浮起 ======\n        '#pca-root input,#pca-root textarea,#pca-root select{transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease,background .2s ease,backdrop-filter .2s ease;will-change:transform}',\n        '#pca-root input:hover,#pca-root textarea:hover,#pca-root select:hover{background:rgba(255,255,255,0.04)!important;backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);transform:translateY(-1px);box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.primary)+',0.15),0 0 0 1px rgba(255,255,255,0.04) inset;border-color:'+pcaC.borderHi+'!important}',\n        '#pca-root input:focus,#pca-root textarea:focus,#pca-root select:focus{background:rgba(255,255,255,0.05)!important;backdrop-filter:blur(10px) saturate(1.3);-webkit-backdrop-filter:blur(10px) saturate(1.3);transform:translateY(-1px);box-shadow:0 4px 14px rgba('+pcaHexToRgb(pcaC.primary)+',0.28),0 0 0 1px '+pcaC.primary+' inset;border-color:'+pcaC.primary+'!important;outline:none}',\n        // hover/focus 浮起兜底（系统减弱动效）\n        '@media (prefers-reduced-motion:reduce){',\n        '  #pca-root .pca-btn:hover,#pca-root .pca-btn-danger:hover,#pca-root input:hover,#pca-root input:focus,#pca-root textarea:hover,#pca-root textarea:focus,#pca-root select:hover,#pca-root select:focus{transform:none!important}',\n        '}',\n        // ====== 主操作按钮（暗血碑：透明底 + 红边 + hover 血液渗透从左到右）======\n        '#pca-root .pca-btn-primary{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 22px;font-size:13px;font-weight:700;color:'+pcaC.accent+';background:transparent;border:1px solid '+pcaC.primary+';border-radius:2px;cursor:pointer;overflow:hidden;font-family:inherit;outline:none;-webkit-text-fill-color:'+pcaC.accent+';letter-spacing:0.5px;transition:color .25s ease,-webkit-text-fill-color .25s ease,border-color .25s ease;z-index:0}',\n        // ::before = 红色填充层，hover 时从左到右铺满\n        '#pca-root .pca-btn-primary::before{content:\"\";position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,'+pcaC.primaryDim+' 0%,'+pcaC.primary+' 100%);transition:width .35s ease;z-index:-1}',\n        '#pca-root .pca-btn-primary:hover{color:'+pcaC.text+';-webkit-text-fill-color:'+pcaC.text+';border-color:'+pcaC.accent+'}',\n        '#pca-root .pca-btn-primary:hover::before{width:100%}',\n        // ::after = 流光红横扫一道（hover 时触发，仅一次扫过）\n        '#pca-root .pca-btn-primary::after{content:\"\";position:absolute;inset:0;background:linear-gradient(120deg,transparent 35%,rgba('+pcaHexToRgb(pcaC.sheen)+',0.55) 50%,transparent 65%);transform:translateX(-100%);transition:transform .7s ease;pointer-events:none}',\n        '#pca-root .pca-btn-primary:hover::after{transform:translateX(100%)}',\n        // 主按钮常驻边框红光呼吸\n        '#pca-root .pca-btn-primary.pca-glow{box-shadow:0 0 0 1px rgba('+pcaHexToRgb(pcaC.primary)+',0.4),0 0 10px rgba('+pcaHexToRgb(pcaC.primary)+',0.18);animation:pcaGlowPulse 3.2s ease-in-out infinite}',\n        '@keyframes pcaGlowPulse{0%,100%{box-shadow:0 0 0 1px rgba('+pcaHexToRgb(pcaC.primary)+',0.35),0 0 6px rgba('+pcaHexToRgb(pcaC.primary)+',0.12)}50%{box-shadow:0 0 0 1px rgba('+pcaHexToRgb(pcaC.sheen)+',0.6),0 0 14px rgba('+pcaHexToRgb(pcaC.sheen)+',0.35)}}',\n        // ====== 标题：静态对角渐变（135°，左上→右下，淡淡过渡）======\n        '#pca-root .pca-title-shine{background:linear-gradient(135deg,'+pcaC.text+' 0%,'+pcaC.textDim+' 100%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}',\n        // ====== 条目悬停 — 左侧 2px 暗红色条带 ======\n        '#pca-root .pca-entry-card{position:relative;transition:background .15s ease}',\n        '#pca-root .pca-entry-card::before{content:\"\";position:absolute;left:0;top:8px;bottom:8px;width:0;background:'+pcaC.primary+';border-radius:2px;transition:width .15s ease;pointer-events:none;box-shadow:0 0 6px rgba('+pcaHexToRgb(pcaC.accent)+',0.4)}',\n        '#pca-root .pca-entry-card:hover::before{width:2px}',\n        '#pca-root .pca-entry-card:hover{background:rgba('+pcaHexToRgb(pcaC.primary)+',0.05)!important}',\n        // ====== 卡片层（无边框，靠 8px gap + 微底色提升）======\n        '#pca-root .pca-card{background:rgba(255,255,255,0.02);border-radius:4px;padding:10px 12px}',\n        // ====== 独立 overlay 按钮（不带 #pca-root 前缀，给挂在 body 上的对话框用）======\n        '.pca-modal-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;font-size:13px;font-weight:600;background:transparent;color:'+pcaC.textDim+';border:1px solid '+pcaC.border+';border-radius:3px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease,color .2s ease,background .2s ease,backdrop-filter .2s ease;white-space:nowrap;line-height:1.2;font-family:inherit;outline:none;letter-spacing:0.3px;will-change:transform}',\n        '.pca-modal-btn:hover{border-color:'+pcaC.accent+';color:'+pcaC.accent+';background:rgba(255,255,255,0.05);backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);transform:translateY(-1px);box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.primary)+',0.18),0 0 0 1px rgba(255,255,255,0.04) inset}',\n        '.pca-modal-btn:active{transform:translateY(0);box-shadow:0 2px 6px rgba('+pcaHexToRgb(pcaC.primary)+',0.12)}',\n        '.pca-modal-btn-primary{position:relative;display:inline-flex;align-items:center;gap:6px;padding:7px 18px;font-size:13px;font-weight:700;background:transparent;color:'+pcaC.accent+';border:1px solid '+pcaC.primary+';border-radius:2px;cursor:pointer;overflow:hidden;letter-spacing:0.5px;line-height:1.2;font-family:inherit;outline:none;transition:color .25s ease,border-color .25s ease,box-shadow .25s ease;z-index:0;white-space:nowrap}',\n        '.pca-modal-btn-primary::before{content:\"\";position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,'+pcaC.primaryDim+' 0%,'+pcaC.primary+' 100%);transition:width .35s ease;z-index:-1}',\n        '.pca-modal-btn-primary:hover{color:'+pcaC.text+';border-color:'+pcaC.accent+';box-shadow:0 4px 14px rgba('+pcaHexToRgb(pcaC.primary)+',0.32)}',\n        '.pca-modal-btn-primary:hover::before{width:100%}',\n        '.pca-modal-btn-primary:active{transform:translateY(1px)}',\n        // ====== 给独立 overlay 内的 .pca-btn / .pca-btn-primary / .pca-btn-danger 兜底（无 #pca-root 前缀）======\n        '.pca-modal-overlay .pca-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;font-size:13px;font-weight:600;background:transparent;color:'+pcaC.textDim+';border:1px solid '+pcaC.border+';border-radius:3px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease,color .2s ease,background .2s ease,backdrop-filter .2s ease;white-space:nowrap;line-height:1.2;font-family:inherit;outline:none;-webkit-text-fill-color:'+pcaC.textDim+';letter-spacing:0.3px;will-change:transform}',\n        '.pca-modal-overlay .pca-btn:hover{border-color:'+pcaC.accent+';color:'+pcaC.accent+';-webkit-text-fill-color:'+pcaC.accent+';background:rgba(255,255,255,0.05);backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);transform:translateY(-1px);box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.primary)+',0.18),0 0 0 1px rgba(255,255,255,0.04) inset}',\n        '.pca-modal-overlay .pca-btn:active{transform:translateY(0);box-shadow:0 2px 6px rgba('+pcaHexToRgb(pcaC.primary)+',0.12)}',\n        '.pca-modal-overlay .pca-btn-danger{color:'+pcaC.danger+';border-color:rgba('+pcaHexToRgb(pcaC.danger)+',0.4);-webkit-text-fill-color:'+pcaC.danger+'}',\n        '.pca-modal-overlay .pca-btn-danger:hover{border-color:'+pcaC.danger+';color:'+pcaC.danger+';-webkit-text-fill-color:'+pcaC.danger+';box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.danger)+',0.22),0 0 0 1px rgba(255,255,255,0.04) inset}',\n        '.pca-modal-overlay .pca-btn-primary{position:relative;display:inline-flex;align-items:center;gap:6px;padding:8px 22px;font-size:13px;font-weight:700;background:transparent;color:'+pcaC.accent+';border:1px solid '+pcaC.primary+';border-radius:2px;cursor:pointer;overflow:hidden;letter-spacing:0.5px;line-height:1.2;font-family:inherit;outline:none;transition:color .25s ease,border-color .25s ease,box-shadow .25s ease;z-index:0;white-space:nowrap}',\n        '.pca-modal-overlay .pca-btn-primary::before{content:\"\";position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,'+pcaC.primaryDim+' 0%,'+pcaC.primary+' 100%);transition:width .35s ease;z-index:-1}',\n        '.pca-modal-overlay .pca-btn-primary:hover{color:'+pcaC.text+';border-color:'+pcaC.accent+';box-shadow:0 4px 14px rgba('+pcaHexToRgb(pcaC.primary)+',0.32)}',\n        '.pca-modal-overlay .pca-btn-primary:hover::before{width:100%}',\n        '.pca-modal-overlay .pca-btn-primary:active{transform:translateY(1px)}',\n        // ====== 滑块开关（启用/禁用）======\n        '.pca-toggle{position:relative;display:inline-block;width:34px;height:18px;flex-shrink:0;cursor:pointer;vertical-align:middle}',\n        '.pca-toggle input{opacity:0;width:0;height:0;position:absolute}',\n        '.pca-toggle .pca-toggle-slider{position:absolute;inset:0;background:'+pcaC.surfaceHi+';border:1px solid '+pcaC.border+';border-radius:18px;transition:background .2s ease,border-color .2s ease}',\n        '.pca-toggle .pca-toggle-slider::before{content:\"\";position:absolute;left:2px;top:1px;width:12px;height:12px;background:'+pcaC.textDim+';border-radius:50%;transition:transform .2s ease,background .2s ease}',\n        '.pca-toggle input:checked + .pca-toggle-slider{background:rgba('+pcaHexToRgb(pcaC.primary)+',0.4);border-color:'+pcaC.primary+'}',\n        '.pca-toggle input:checked + .pca-toggle-slider::before{transform:translateX(16px);background:'+pcaC.accent+'}',\n        '.pca-toggle:hover .pca-toggle-slider{box-shadow:0 0 0 3px rgba('+pcaHexToRgb(pcaC.primary)+',0.12)}',\n        // ====== 减弱动效兜底 ======\n        '@media (prefers-reduced-motion:reduce){',\n        '  #pca-root .pca-btn-primary::before,#pca-root .pca-btn-primary::after,#pca-root .pca-btn-primary.pca-glow{animation:none!important;transition:none!important}',\n        '}',\n        '.pca-insert-line{transition:all 0.15s ease;cursor:pointer!important}',\n        '.pca-insert-line:hover{background:'+pcaC.migrateBg+'!important;border-color:'+pcaC.migrateBorder+'!important}',\n        '.pca-insert-line:hover .pca-insert-icon{color:'+pcaC.migrate+'!important;transform:scale(1.3)}',\n        '.pca-insert-line [data-pca-action]{cursor:pointer!important}',\n        '#pca-root .pca-entry-item{transition:background 0.1s}',\n        '#pca-root .pca-entry-item:hover{background:rgba(255,255,255,0.03)!important}',\n        '#pca-root .pca-search-input{background:'+pcaC.input+'!important;color:'+pcaC.text+'!important;border:1px solid '+pcaC.border+'!important;border-radius:6px!important;padding:6px 10px!important;font-size:12px!important;outline:none!important;width:100%!important}',\n        '#pca-root .pca-search-input:focus{border-color:'+pcaC.pink+'!important}',\n        '#pca-root .pca-search-input::placeholder{color:'+pcaC.dim+'!important}',\n        '#pca-root .pca-note-tag{display:inline-flex;align-items:center;gap:4px;background:'+pcaC.card2+';border:1px solid '+pcaC.border+';border-radius:16px;padding:3px 10px 3px 8px;font-size:12px;color:'+pcaC.text+';margin:3px;transition:all 0.15s;max-width:100%;overflow:hidden}',\n        '#pca-root .pca-note-tag:hover{border-color:'+pcaC.migrate+'}',\n        '#pca-root .pca-note-tag .pca-note-x{color:'+pcaC.dim+';cursor:pointer;font-size:14px;line-height:1;padding:0 2px;flex-shrink:0}',\n        '#pca-root .pca-note-tag .pca-note-x:hover{color:'+pcaC.danger+'}',\n        '#pca-root .pca-note-tag .pca-note-find{color:'+pcaC.migrate+';cursor:pointer;font-size:11px;flex-shrink:0}',\n        '#pca-root .pca-note-tag .pca-note-find:hover{color:'+pcaC.pink+'}',\n        '#pca-root .pca-note-tag .pca-note-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',\n        '.pca-modal-overlay{position:fixed!important;inset:0!important;z-index:2147483647!important;background:rgba(0,0,0,0.75)!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:10px!important}',\n        '#pca-editor-overlay{cursor:default!important}',\n        '#pca-editor-overlay *{box-sizing:border-box}',\n        '#pca-editor-overlay textarea{background:'+pcaC.input+'!important;color:'+pcaC.text+'!important;border:1px solid '+pcaC.border+'!important;border-radius:6px!important;padding:10px 12px!important;font-size:14px!important;line-height:1.6!important;font-family:Consolas,Menlo,monospace!important;outline:none!important;resize:vertical!important;width:100%!important;box-sizing:border-box!important;-webkit-text-fill-color:'+pcaC.text+'!important;opacity:1!important}',\n        '#pca-editor-overlay textarea:focus{border-color:'+pcaC.migrate+'!important}',\n        '#pca-editor-overlay [data-pca-action]{cursor:pointer!important}',\n        '#pca-editor-overlay [data-pca-action]:hover{opacity:0.85}',\n        '#pca-editor-overlay button{cursor:pointer!important;font-family:inherit!important}',\n        '#pca-editor-overlay .pca-ed-btn{font-size:12px!important;padding:5px 10px!important;background:'+pcaC.card2+'!important;color:'+pcaC.text+'!important;border:1px solid '+pcaC.border+'!important;border-radius:5px!important;cursor:pointer!important;user-select:none!important;display:inline-block!important;line-height:1.4!important;-webkit-text-fill-color:'+pcaC.text+'!important}',\n        '#pca-editor-overlay .pca-ed-btn:hover{border-color:'+pcaC.migrate+'!important;color:'+pcaC.migrate+'!important;-webkit-text-fill-color:'+pcaC.migrate+'!important}',\n        '#pca-editor-overlay .pca-ed-tab{font-size:12px!important;padding:6px 12px!important;border-radius:6px 6px 0 0!important;cursor:pointer!important;user-select:none!important;border:1px solid '+pcaC.border+'!important;border-bottom:none!important;background:'+pcaC.card2+'!important;color:'+pcaC.dim+'!important;display:inline-block!important;-webkit-text-fill-color:'+pcaC.dim+'!important}',\n        '#pca-editor-overlay .pca-ed-tab.active{background:'+pcaC.input+'!important;color:'+pcaC.migrate+'!important;border-color:'+pcaC.migrateBorder+'!important;-webkit-text-fill-color:'+pcaC.migrate+'!important}',\n        '#pca-editor-overlay .pca-ed-diff-line{cursor:pointer!important;transition:filter 0.1s}',\n        '#pca-editor-overlay .pca-ed-diff-line:hover{filter:brightness(1.3)}',\n        '#pca-editor-overlay .pca-ed-diff-line:hover .pca-ed-copy-icon{opacity:1!important}',\n        // ====== 全设备响应式 ======\n        // 平板 / 小笔记本（≤900px）：内边距收紧\n        '@media(max-width:900px){',\n        '  #pca-root{font-size:13px}',\n        '  #pca-root .pca-pad-x{padding-left:14px!important;padding-right:14px!important}',\n        '}',\n        // 手机大屏（≤640px）— 用 dvh（动态视口高度）避开浏览器导航栏占位\n        '@media(max-width:640px){',\n        '  :root,#pca-root{--pca-space-xl:14px;--pca-space-lg:12px;--pca-space-md:10px}',\n        '  #pca-root{width:100vw!important;max-width:100vw!important;max-height:100vh!important;max-height:100dvh!important;border-radius:0!important}',\n        '  #pca-root .pca-entry-name-id{flex-direction:column!important;align-items:flex-start!important;gap:2px!important}',\n        '  #pca-root .pca-eid-tag{max-width:100%!important;overflow:hidden;text-overflow:ellipsis;font-size:9px!important}',\n        '  #pca-root .pca-entry-name{white-space:normal!important;word-break:break-word!important}',\n        '  #pca-root .pca-toolbar{flex-wrap:wrap!important;gap:6px!important}',\n        '  #pca-root .pca-toolbar > *{flex:0 0 auto!important}',\n        '  #pca-root .pca-tabs-bar{overflow-x:auto!important;overflow-y:hidden!important;flex-wrap:nowrap!important;-webkit-overflow-scrolling:touch}',\n        '  #pca-root .pca-tabs-bar > *{flex-shrink:0!important;padding:8px 12px!important;font-size:12px!important}',\n        '  #pca-root .pca-filter-row{gap:6px!important}',\n        '  #pca-root .pca-filter-row > *{font-size:11px!important;padding:3px 8px!important}',\n        '  #pca-root .pca-fav-tabs{overflow-x:auto;flex-wrap:nowrap!important;-webkit-overflow-scrolling:touch;padding-bottom:4px}',\n        '  #pca-root .pca-fav-tabs > *{flex-shrink:0!important}',\n        '  #pca-editor-overlay .pca-ed-modal{width:100vw!important;max-width:100vw!important;max-height:100vh!important;height:100vh!important;max-height:100dvh!important;height:100dvh!important;border-radius:0!important}',\n        '  #pca-editor-overlay textarea{font-size:13px!important}',\n        '  #pca-editor-overlay .pca-ed-toolbar{flex-wrap:wrap!important;gap:4px!important}',\n        '}',\n        // 极窄屏（≤414px，常见手机）：进一步紧凑\n        '@media(max-width:414px){',\n        '  #pca-root{font-size:12px}',\n        '  #pca-root h1,#pca-root h2,#pca-root h3{font-size:14px!important}',\n        '  #pca-root .pca-pad-x{padding-left:10px!important;padding-right:10px!important}',\n        '  #pca-root .pca-fav-tabs > *{font-size:10px!important;padding:2px 8px!important}',\n        '  #pca-root button,#pca-root .pca-btn{font-size:12px!important;padding:5px 10px!important}',\n        '  #pca-root select{font-size:12px!important;padding:6px 8px!important}',\n        '  #pca-root .pca-search-input{font-size:12px!important;padding:5px 8px!important}',\n        '}',\n        // 折叠屏极窄竖屏（≤320px）\n        '@media(max-width:320px){',\n        '  #pca-root .pca-pad-x{padding-left:8px!important;padding-right:8px!important}',\n        '  #pca-root .pca-tabs-bar > *{padding:6px 10px!important;font-size:11px!important}',\n        '}',\n    ].join('\\n');\n    doc.head.appendChild(s);\n}\n\nfunction pcaSetupButton() {\n    var doc = pcaGetDoc();\n    var old = doc.querySelector('#pca-wand-btn'); if (old) old.remove();\n    var menu = doc.querySelector('#extensionsMenu');\n    if (!menu) { setTimeout(pcaSetupButton, 500); return; }\n    var btn = doc.createElement('div');\n    btn.id = 'pca-wand-btn';\n    btn.className = 'list-group-item flex-container flexGap5 interactable';\n    btn.tabIndex = 0;\n    btn.innerHTML = '<div class=\"fa-fw fa-solid fa-code-compare extensionsMenuExtensionButton\"></div> ✧ 预设对比';\n    btn.style.cursor = 'pointer';\n    btn.addEventListener('click', function(){ pcaOpenPanel(); });\n    menu.appendChild(btn);\n}\n\nfunction pcaGetPresetNames() {\n    var items = [], doc = pcaGetDoc(), sel = null;\n    try { var ctx = SillyTavern.getContext(); var pm = ctx.getPresetManager(); if (pm && pm.select) sel = (pm.select.length !== undefined) ? pm.select[0] : pm.select; } catch(e) {}\n    if (!sel) sel = doc.querySelector('#settings_preset_openai');\n    if (sel && sel.options) { for (var i=0;i<sel.options.length;i++) { var v=(sel.options[i].value||'').trim(),t=(sel.options[i].text||sel.options[i].textContent||'').trim(); if(v||t) items.push({value:v,text:t}); } }\n    return items;\n}\n\nasync function pcaFetchAllPresets() {\n    try {\n        var res = await fetch('/api/settings/get',{method:'POST',headers:pcaGetHeaders(),body:JSON.stringify({})});\n        if (!res.ok) throw new Error('HTTP '+res.status);\n        var data = await res.json();\n        if (!data.openai_settings||!data.openai_setting_names) throw new Error('无openai_settings');\n        var rawList = data.openai_settings, names = data.openai_setting_names, parsedList = [];\n        for (var i=0;i<rawList.length;i++) { var item=rawList[i]; if(typeof item==='string'){try{item=JSON.parse(item);}catch(e){parsedList.push(null);continue;}} parsedList.push(item); }\n        return {names:names,list:parsedList};\n    } catch(e) { pcaLog('获取失败:'+e.message); return null; }\n}\n\nfunction pcaFindPreset(all, name) {\n    if(!all) return null;\n    var idx=all.names.indexOf(name);\n    if(idx!==-1&&all.list[idx]) return JSON.parse(JSON.stringify(all.list[idx]));\n    var num=parseInt(name,10);\n    if(!isNaN(num)&&num>=0&&num<all.list.length&&all.list[num]) return JSON.parse(JSON.stringify(all.list[num]));\n    for(var i=0;i<all.names.length;i++){if(all.names[i].toLowerCase()===name.toLowerCase()) return JSON.parse(JSON.stringify(all.list[i]));}\n    return null;\n}\n\nfunction pcaGetOrder(po) {\n    if(!po)return[];\n    if(!Array.isArray(po)){if(typeof po==='object'){var ks=Object.keys(po);for(var i=0;i<ks.length;i++){if(Array.isArray(po[ks[i]]))return po[ks[i]];}}return[];}\n    if(!po.length)return[];\n    if(po[0]&&po[0].order&&Array.isArray(po[0].order))return po[0].order;\n    if(po[0]&&po[0].identifier!==undefined)return po;\n    return[];\n}\n\nfunction pcaExtract(preset) {\n    if(!preset)return[];\n    var prompts=preset.prompts||[],order=pcaGetOrder(preset.prompt_order);\n    var pMap={};prompts.forEach(function(p){if(p&&p.identifier)pMap[p.identifier]=p;});\n    var entries=[],seen={};\n    order.forEach(function(item){if(!item||!item.identifier)return;var p=pMap[item.identifier];entries.push({id:item.identifier,name:p?(p.name||item.identifier):item.identifier,enabled:!!item.enabled,content:p?(p.content||''):'',role:p?(p.role||''):'',marker:p?!!p.marker:false});seen[item.identifier]=true;});\n    prompts.forEach(function(p){if(p&&p.identifier&&!seen[p.identifier])entries.push({id:p.identifier,name:p.name||p.identifier,enabled:false,content:p.content||'',role:p.role||'',marker:!!p.marker});});\n    return entries;\n}\n\nfunction pcaCompare(left, right) {\n    var diffs=[],news=[];\n    var leftById={};left.forEach(function(e){leftById[e.id]=e;});\n    var leftByName={};left.forEach(function(e){if(!leftByName[e.name])leftByName[e.name]=[];leftByName[e.name].push(e);});\n    right.forEach(function(r){\n        var ml=leftById[r.id];\n        if(ml){if(ml.enabled!==r.enabled)diffs.push({left:ml,right:r});return;}\n        var nms=leftByName[r.name];\n        if(nms&&nms.length>0){nms.forEach(function(l){if(l.enabled!==r.enabled)diffs.push({left:l,right:r});});return;}\n        news.push({right:r});\n    });\n    return {diffs:diffs,newItems:news};\n}\n\nfunction pcaGetEnabled(preset,id){var order=pcaGetOrder(preset.prompt_order);for(var i=0;i<order.length;i++){if(order[i].identifier===id)return!!order[i].enabled;}return false;}\nfunction pcaSetEnabled(preset,id,val){var order=pcaGetOrder(preset.prompt_order);for(var i=0;i<order.length;i++){if(order[i].identifier===id){order[i].enabled=val;return;}}}\n\nasync function pcaSavePresetToFile(preset, name) {\n    var saveData = {};\n    var keys = Object.keys(preset);\n    for (var k = 0; k < keys.length; k++) {\n        saveData[keys[k]] = preset[keys[k]];\n    }\n    saveData.preset_name = name;\n\n    pcaLog('保存数据字段数: ' + Object.keys(saveData).length + ' prompts: ' + (saveData.prompts?saveData.prompts.length:0));\n\n    // 优先用ST自己的savePreset方法\n    try {\n        var ctx = SillyTavern.getContext();\n        var pm = ctx.getPresetManager();\n        if (pm && typeof pm.savePreset === 'function') {\n            pcaLog('使用 pm.savePreset, apiId=' + pm.apiId);\n            await pm.savePreset(name, saveData, { skipUpdate: false });\n            pcaLog('✓ pm.savePreset 完成');\n            return true;\n        }\n    } catch(e) {\n        pcaLog('pm.savePreset 失败: ' + e.message + ', fallback to fetch');\n    }\n\n    // 备用：直接fetch\n    try {\n        var res = await fetch('/api/presets/save', {\n            method: 'POST',\n            headers: pcaGetHeaders(),\n            body: JSON.stringify({ preset: saveData, name: name, apiId: 'openai' })\n        });\n        if (res.ok) {\n            pcaLog('文件保存成功 via fetch status=' + res.status);\n            return true;\n        }\n        pcaLog('端点返回: ' + res.status + ' ' + res.statusText);\n    } catch(e) {\n        pcaLog('端点异常: ' + e.message);\n    }\n    return false;\n}\n\nfunction pcaGetPresetSelect() {\n    var doc = pcaGetDoc();\n    var sel = null;\n    try { var ctx = SillyTavern.getContext(); var pm = ctx.getPresetManager(); if (pm && pm.select) sel = (pm.select.length !== undefined) ? pm.select[0] : pm.select; } catch(e) {}\n    if (!sel) sel = doc.querySelector('#settings_preset_openai');\n    return sel;\n}\n\nfunction pcaIsCurrentPreset(name) {\n    var sel = pcaGetPresetSelect();\n    if (!sel || sel.selectedIndex < 0) return false;\n    var curName = (sel.options[sel.selectedIndex].text || '').trim();\n    return curName === name.trim();\n}\n\nfunction pcaForceRefreshPromptManagerUI() {\n    var doc = pcaGetDoc();\n    var $j = pcaGetJQ();\n    var sel = doc.querySelector('#settings_preset_openai');\n    if (!sel) return;\n    if ($j) {\n        try { $j(sel).trigger('change'); pcaLog('✓ 已触发 select change'); }\n        catch(e) { pcaLog('jQuery trigger 失败: ' + e.message); }\n    } else {\n        try { sel.dispatchEvent(new Event('change', { bubbles: true })); } catch(e) {}\n    }\n}\n\nasync function pcaSyncAndSave(presetData, name) {\n    pcaLog('保存: \"' + name + '\" prompts=' + (presetData.prompts?presetData.prompts.length:0));\n    \n    // 安全检查：拒绝保存空数据\n    if (!presetData || !presetData.prompts || presetData.prompts.length === 0) {\n        pcaLog('❌ 拒绝保存：prompts为空');\n        toastr.error('数据异常，已阻止保存（防止清空预设）');\n        return false;\n    }\n    \n    // 只保存文件，不碰live对象，不调updatePreset\n    var saved = await pcaSavePresetToFile(presetData, name);\n    if (!saved) return false;\n    \n    pcaLog('✓ 文件已保存');\n    \n    // 如果是当前预设，提示用户切换刷新\n    if (pcaIsCurrentPreset(name)) {\n        toastr.success('保存成功！', '', {timeOut: 6000});\n    } else {\n        toastr.success('保存成功！');\n    }\n    return true;\n}\n\n// ========== 取当前迁移视图下\"可见的左侧条目 id 列表\" ==========\nfunction pcaGetVisibleLeftEntryIds() {\n    var leftEntries = pcaState.leftEntries || [];\n    var rightEntries = pcaExtract(pcaState.rightPresetData);\n    var rightById = {}, rightByName = {};\n    rightEntries.forEach(function(e) { rightById[e.id] = e; rightByName[e.name] = e; });\n    // 匹配优先级：name 优先（用户视角），id 兜底\n    var filterNames = (typeof pcaGetMigrateFilterNames === 'function') ? pcaGetMigrateFilterNames() : null;\n    var ids = [];\n    leftEntries.forEach(function(e) {\n        if (filterNames && typeof pcaMatchesFilter === 'function' && !pcaMatchesFilter(e.name, filterNames)) return;\n        var rightMatch = rightByName[e.name] || rightById[e.id] || null;\n        var exists = !!rightMatch;\n        var contentSame = rightMatch ? pcaContentEqual(e.content, rightMatch.content) : false;\n        if (pcaState.migrateFilterStatus === 'exists' && !exists) return;\n        if (pcaState.migrateFilterStatus === 'new' && exists) return;\n        if (pcaState.migrateFilterDiff === 'diff' && exists && contentSame) return;\n        if (pcaState.migrateFilterDiff === 'same' && (!exists || !contentSame)) return;\n        ids.push(e.id);\n    });\n    return ids;\n}\n\n// ========== 智能定位算法（双锚点） ==========\n// 给定旧版条目 srcEntry，返回它在新版应插入的位置\n// 返回: { insertIndex, insertAfterName, confidence: 'high'|'medium'|'low', warn: '...' }\nfunction pcaResolveSamePosition(srcEntry, leftEntries, rightEntries) {\n    var srcIdx = -1;\n    for (var i = 0; i < leftEntries.length; i++) {\n        if (leftEntries[i].id === srcEntry.id) { srcIdx = i; break; }\n    }\n    if (srcIdx < 0) {\n        return { insertIndex: rightEntries.length, insertAfterName: '', insertBeforeName: '', confidence: 'low', warn: '在旧版中找不到该条目，已追加到末尾' };\n    }\n\n    // 在右侧找到候选条目的位置（id 优先，name 兜底）\n    function findInRight(cand) {\n        for (var ri = 0; ri < rightEntries.length; ri++) {\n            if (rightEntries[ri].id === cand.id) return ri;\n        }\n        for (var rj = 0; rj < rightEntries.length; rj++) {\n            if (rightEntries[rj].name === cand.name) return rj;\n        }\n        return -1;\n    }\n\n    // 向上找最近共有前驱\n    var prevAnchor = null;\n    for (var pi = srcIdx - 1; pi >= 0; pi--) {\n        var rIdxP = findInRight(leftEntries[pi]);\n        if (rIdxP >= 0) { prevAnchor = { name: leftEntries[pi].name, rightIndex: rIdxP }; break; }\n    }\n    // 向下找最近共有后继\n    var nextAnchor = null;\n    for (var ni = srcIdx + 1; ni < leftEntries.length; ni++) {\n        var rIdxN = findInRight(leftEntries[ni]);\n        if (rIdxN >= 0) { nextAnchor = { name: leftEntries[ni].name, rightIndex: rIdxN }; break; }\n    }\n\n    if (prevAnchor && nextAnchor) {\n        if (prevAnchor.rightIndex < nextAnchor.rightIndex) {\n            return { insertIndex: prevAnchor.rightIndex + 1, insertAfterName: prevAnchor.name, insertBeforeName: nextAnchor.name, confidence: 'high', warn: '' };\n        }\n        return { insertIndex: prevAnchor.rightIndex + 1, insertAfterName: prevAnchor.name, insertBeforeName: '', confidence: 'medium', warn: '新版顺序与旧版不一致，按\"' + prevAnchor.name + '\"之后插入' };\n    }\n    if (prevAnchor) {\n        return { insertIndex: prevAnchor.rightIndex + 1, insertAfterName: prevAnchor.name, insertBeforeName: '', confidence: 'medium', warn: '' };\n    }\n    if (nextAnchor) {\n        // posLabel 已会显示\"在 xx 前\"，warn 留空避免重复信息\n        return { insertIndex: nextAnchor.rightIndex, insertAfterName: '', insertBeforeName: nextAnchor.name, confidence: 'medium', warn: '' };\n    }\n    if (srcIdx === 0) {\n        return { insertIndex: 0, insertAfterName: '', insertBeforeName: '', confidence: 'low', warn: '无共有邻居，已置于新版顶部' };\n    }\n    return { insertIndex: rightEntries.length, insertAfterName: '', insertBeforeName: '', confidence: 'low', warn: '无共有邻居，已追加到新版末尾' };\n}\n\n// ========== 收藏夹分组 ==========\n// 数据结构：pcaState.migrateFavGroups = { groupId: { id, name, color, notes:[name,...] } }\n// pcaState.migrateNotes 视为\"未分组\"（虚拟分组 id=''），向后兼容旧数据\nvar PCA_FAV_GROUPS_KEY = 'pca_migrate_fav_groups_v1';\nvar PCA_FAV_PALETTE = ['#d4a853','#8eb8e5','#6ecf8a','#e07090','#b08ee5','#e0a070','#5fb8c5','#cc6677'];\n\nfunction pcaLoadFavGroups() {\n    try { var s = localStorage.getItem(PCA_FAV_GROUPS_KEY); if (s) pcaState.migrateFavGroups = JSON.parse(s); } catch(e) {}\n    if (!pcaState.migrateFavGroups || typeof pcaState.migrateFavGroups !== 'object') pcaState.migrateFavGroups = {};\n}\nfunction pcaSaveFavGroups() {\n    try { localStorage.setItem(PCA_FAV_GROUPS_KEY, JSON.stringify(pcaState.migrateFavGroups || {})); } catch(e) {}\n}\nfunction pcaGenFavGroupId() {\n    return 'g' + Date.now().toString(36) + Math.floor(Math.random()*1000).toString(36);\n}\n// 生成新条目 ID（UUID v4 风格，跟 ST 的 identifier 兼容）\nfunction pcaGenEntryId() {\n    try {\n        if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {\n            return crypto.randomUUID();\n        }\n    } catch(e) {}\n    // 兜底：手写 v4 UUID\n    var hex = '0123456789abcdef';\n    var s = '';\n    for (var i = 0; i < 36; i++) {\n        if (i === 8 || i === 13 || i === 18 || i === 23) { s += '-'; }\n        else if (i === 14) { s += '4'; }\n        else if (i === 19) { s += hex[(Math.random()*4|0) + 8]; }\n        else { s += hex[Math.random()*16|0]; }\n    }\n    return s;\n}\nfunction pcaCreateFavGroup(name, color) {\n    name = (name || '').trim();\n    if (!name) { toastr.warning('请输入分组名'); return null; }\n    pcaLoadFavGroups();\n    // 重名检查\n    var groups = pcaState.migrateFavGroups;\n    var keys = Object.keys(groups);\n    for (var i = 0; i < keys.length; i++) {\n        if (groups[keys[i]].name === name) { toastr.warning('已有同名分组：' + name); return keys[i]; }\n    }\n    var id = pcaGenFavGroupId();\n    var pickedColor = color || PCA_FAV_PALETTE[keys.length % PCA_FAV_PALETTE.length];\n    groups[id] = { id: id, name: name, color: pickedColor, notes: [] };\n    pcaSaveFavGroups();\n    return id;\n}\nfunction pcaRenameFavGroup(groupId, newName) {\n    pcaLoadFavGroups();\n    var g = pcaState.migrateFavGroups[groupId];\n    if (!g) return false;\n    newName = (newName || '').trim();\n    if (!newName) return false;\n    g.name = newName;\n    pcaSaveFavGroups();\n    return true;\n}\nfunction pcaSetFavGroupColor(groupId, color) {\n    pcaLoadFavGroups();\n    var g = pcaState.migrateFavGroups[groupId];\n    if (!g) return false;\n    g.color = color;\n    pcaSaveFavGroups();\n    return true;\n}\nfunction pcaDeleteFavGroup(groupId) {\n    pcaLoadFavGroups();\n    if (!pcaState.migrateFavGroups[groupId]) return false;\n    delete pcaState.migrateFavGroups[groupId];\n    pcaSaveFavGroups();\n    if (pcaState.activeFavGroupId === groupId) pcaState.activeFavGroupId = '';\n    return true;\n}\n// 把若干条目名加入指定分组（groupId='' 表示加入未分组）\nfunction pcaAddToFavGroup(entryNames, groupId) {\n    if (!entryNames || entryNames.length === 0) return 0;\n    var added = 0;\n    if (!groupId) {\n        // 未分组：写入 migrateNotes\n        if (!pcaState.migrateNotes) pcaState.migrateNotes = [];\n        entryNames.forEach(function(n) {\n            if (pcaState.migrateNotes.indexOf(n) < 0) { pcaState.migrateNotes.push(n); added++; }\n        });\n        pcaSaveNotes();\n        return added;\n    }\n    pcaLoadFavGroups();\n    var g = pcaState.migrateFavGroups[groupId];\n    if (!g) return 0;\n    if (!g.notes) g.notes = [];\n    entryNames.forEach(function(n) {\n        if (g.notes.indexOf(n) < 0) { g.notes.push(n); added++; }\n    });\n    pcaSaveFavGroups();\n    return added;\n}\n// 从指定分组移除某条目\nfunction pcaRemoveFromFavGroup(entryName, groupId) {\n    if (!groupId) {\n        if (!pcaState.migrateNotes) return false;\n        var idx = pcaState.migrateNotes.indexOf(entryName);\n        if (idx < 0) return false;\n        pcaState.migrateNotes.splice(idx, 1);\n        pcaSaveNotes();\n        return true;\n    }\n    pcaLoadFavGroups();\n    var g = pcaState.migrateFavGroups[groupId];\n    if (!g || !g.notes) return false;\n    var i = g.notes.indexOf(entryName);\n    if (i < 0) return false;\n    g.notes.splice(i, 1);\n    pcaSaveFavGroups();\n    return true;\n}\nfunction pcaListFavGroups() {\n    pcaLoadFavGroups();\n    return pcaState.migrateFavGroups || {};\n}\n// 取当前激活分组下的条目名数组（用于\"显示全部收藏\"过滤）\nfunction pcaGetActiveFavNames() {\n    var aid = pcaState.activeFavGroupId || '';\n    if (!aid) return (pcaState.migrateNotes || []).slice();\n    pcaLoadFavGroups();\n    var g = pcaState.migrateFavGroups[aid];\n    return (g && g.notes) ? g.notes.slice() : [];\n}\n// 取所有收藏（跨分组合并），用于\"显示全部收藏\"按钮\nfunction pcaGetAllFavNames() {\n    var all = (pcaState.migrateNotes || []).slice();\n    pcaLoadFavGroups();\n    var groups = pcaState.migrateFavGroups || {};\n    Object.keys(groups).forEach(function(gid) {\n        (groups[gid].notes || []).forEach(function(n) { if (all.indexOf(n) < 0) all.push(n); });\n    });\n    return all;\n}\n\n// 弹出\"加入收藏夹分组\"选择对话框（批量）\nfunction pcaRenderFavGroupPicker(entryNames, callback) {\n    if (!entryNames || entryNames.length === 0) { toastr.warning('请先选择条目'); return; }\n    pcaLoadFavGroups();\n    var doc = pcaGetDoc();\n    var existing = doc.querySelector('#pca-fav-picker-overlay');\n    if (existing) existing.remove();\n\n    var groups = pcaState.migrateFavGroups || {};\n    var groupIds = Object.keys(groups);\n\n    var html = '<div class=\"pca-modal-overlay\" id=\"pca-fav-picker-overlay\">';\n    html += '<div style=\"background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:min(480px,96vw);max-height:min(80vh,640px);max-height:min(80dvh,640px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);\">';\n    html += '<div style=\"padding:14px 20px;border-bottom:1px solid '+pcaC.border+';flex-shrink:0;\">';\n    html += '<div style=\"font-size:15px;font-weight:700;color:'+pcaC.gold+';margin-bottom:4px;\">⭐ 加入收藏夹分组</div>';\n    html += '<div style=\"font-size:12px;color:'+pcaC.dim+';\">已选 '+entryNames.length+' 项 · 选择目标分组</div>';\n    html += '</div>';\n    html += '<div style=\"flex:1;overflow-y:auto;padding:12px 16px;\">';\n    // 未分组\n    var ungroupedCount = (pcaState.migrateNotes || []).length;\n    html += '<div data-pca-action=\"favp-pick\" data-pca-gid=\"\" style=\"display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid '+pcaC.border+';border-radius:8px;margin-bottom:6px;background:'+pcaC.card+';cursor:pointer;\">';\n    html += '<span style=\"width:14px;height:14px;border-radius:3px;background:'+pcaC.dim+';flex-shrink:0;\"></span>';\n    html += '<span style=\"flex:1;font-size:13px;color:'+pcaC.text+';\">📂 未分组</span>';\n    html += '<span style=\"font-size:11px;color:'+pcaC.dim+';\">'+ungroupedCount+' 项</span>';\n    html += '</div>';\n    // 已有分组\n    groupIds.forEach(function(gid) {\n        var g = groups[gid];\n        html += '<div data-pca-action=\"favp-pick\" data-pca-gid=\"'+pcaAttr(gid)+'\" style=\"display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid '+pcaC.border+';border-radius:8px;margin-bottom:6px;background:'+pcaC.card+';cursor:pointer;\">';\n        html += '<span style=\"width:14px;height:14px;border-radius:3px;background:'+(g.color||pcaC.gold)+';flex-shrink:0;\"></span>';\n        html += '<span style=\"flex:1;font-size:13px;color:'+pcaC.text+';\">'+pcaEsc(g.name)+'</span>';\n        html += '<span style=\"font-size:11px;color:'+pcaC.dim+';\">'+((g.notes||[]).length)+' 项</span>';\n        html += '</div>';\n    });\n    html += '<div style=\"border-top:1px dashed '+pcaC.border+';margin-top:12px;padding-top:12px;\">';\n    html += '<div style=\"font-size:12px;color:'+pcaC.dim+';margin-bottom:6px;\">或新建分组：</div>';\n    html += '<div style=\"display:flex;gap:6px;\">';\n    html += '<input id=\"pca-favp-newname\" placeholder=\"新分组名\" style=\"flex:1;background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:6px 10px;color:'+pcaC.text+';font-size:12px;\" />';\n    html += '<button data-pca-action=\"favp-new\" class=\"pca-modal-btn-primary\" style=\"padding:6px 14px;font-size:12px;\">+ 新建并加入</button>';\n    html += '</div></div>';\n    html += '</div>';\n    html += '<div style=\"padding:10px 20px;border-top:1px solid '+pcaC.border+';display:flex;justify-content:flex-end;flex-shrink:0;\">';\n    html += '<button data-pca-action=\"favp-cancel\" class=\"pca-modal-btn\">取消</button>';\n    html += '</div></div></div>';\n\n    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');\n    var wrap = doc.createElement('div'); wrap.innerHTML = html;\n    var overlayEl = wrap.firstChild;\n    if (existingDialog) existingDialog.appendChild(overlayEl); else doc.body.appendChild(overlayEl);\n\n    overlayEl.addEventListener('click', function(e) {\n        e.stopPropagation();\n        var t = e.target;\n        while (t && t !== overlayEl) {\n            if (t.getAttribute && t.getAttribute('data-pca-action')) break;\n            t = t.parentElement;\n        }\n        if (!t || t === overlayEl) return;\n        var act = t.getAttribute('data-pca-action');\n        if (act === 'favp-cancel') { overlayEl.remove(); if (typeof callback === 'function') callback(null); return; }\n        if (act === 'favp-pick') {\n            var gid = t.getAttribute('data-pca-gid') || '';\n            var n = pcaAddToFavGroup(entryNames, gid);\n            overlayEl.remove();\n            var groupName = gid ? (pcaState.migrateFavGroups[gid] && pcaState.migrateFavGroups[gid].name) || '?' : '未分组';\n            toastr.success('已加入「'+groupName+'」：'+n+' 项' + (n < entryNames.length ? '（'+(entryNames.length-n)+' 项已存在）' : ''));\n            pcaState.migrateSelected = {};\n            if (typeof callback === 'function') callback(gid);\n            pcaRenderMigrate();\n            return;\n        }\n        if (act === 'favp-new') {\n            var inp = doc.querySelector('#pca-favp-newname');\n            var name = inp ? (inp.value || '').trim() : '';\n            if (!name) { toastr.warning('请输入分组名'); return; }\n            var newGid = pcaCreateFavGroup(name, null);\n            if (!newGid) return;\n            var added = pcaAddToFavGroup(entryNames, newGid);\n            overlayEl.remove();\n            toastr.success('已创建「'+name+'」并加入 '+added+' 项');\n            pcaState.migrateSelected = {};\n            if (typeof callback === 'function') callback(newGid);\n            pcaRenderMigrate();\n        }\n    });\n}\n\n// 弹出\"管理分组\"对话框（重命名/改色/删除）\nfunction pcaRenderFavGroupManager() {\n    pcaLoadFavGroups();\n    var doc = pcaGetDoc();\n    var existing = doc.querySelector('#pca-fav-mgr-overlay');\n    if (existing) existing.remove();\n\n    var groups = pcaState.migrateFavGroups || {};\n    var groupIds = Object.keys(groups);\n\n    var html = '<div class=\"pca-modal-overlay\" id=\"pca-fav-mgr-overlay\">';\n    html += '<div style=\"background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:min(520px,96vw);max-height:min(80vh,640px);max-height:min(80dvh,640px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);\">';\n    html += '<div style=\"padding:14px 20px;border-bottom:1px solid '+pcaC.border+';flex-shrink:0;display:flex;align-items:center;justify-content:space-between;\">';\n    html += '<span style=\"font-size:15px;font-weight:700;color:'+pcaC.gold+';\">🗂 管理收藏夹分组</span>';\n    html += '<span data-pca-action=\"favm-close\" style=\"cursor:pointer;color:'+pcaC.dim+';font-size:18px;padding:0 4px;\">×</span>';\n    html += '</div>';\n    html += '<div style=\"flex:1;overflow-y:auto;padding:12px 16px;\">';\n    if (groupIds.length === 0) {\n        html += '<div style=\"text-align:center;padding:24px;color:'+pcaC.dim+';font-size:12px;\">还没有分组。在收藏夹卡片右上角点 ➕ 创建第一个分组。</div>';\n    } else {\n        groupIds.forEach(function(gid) {\n            var g = groups[gid];\n            html += '<div style=\"display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid '+pcaC.border+';border-radius:8px;margin-bottom:6px;background:'+pcaC.card+';\">';\n            html += '<span data-pca-action=\"favm-color\" data-pca-gid=\"'+pcaAttr(gid)+'\" title=\"点击换颜色\" style=\"width:18px;height:18px;border-radius:4px;background:'+(g.color||pcaC.gold)+';cursor:pointer;flex-shrink:0;\"></span>';\n            html += '<input data-pca-action=\"favm-rename\" data-pca-gid=\"'+pcaAttr(gid)+'\" value=\"'+pcaAttr(g.name)+'\" style=\"flex:1;background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:4px 8px;color:'+pcaC.text+';font-size:12px;\" />';\n            html += '<span style=\"font-size:11px;color:'+pcaC.dim+';white-space:nowrap;\">'+((g.notes||[]).length)+' 项</span>';\n            html += '<span data-pca-action=\"favm-delete\" data-pca-gid=\"'+pcaAttr(gid)+'\" style=\"cursor:pointer;color:'+pcaC.danger+';font-size:14px;padding:0 6px;\" title=\"删除分组\">🗑</span>';\n            html += '</div>';\n        });\n    }\n    // 新建分组\n    html += '<div style=\"border-top:1px dashed '+pcaC.border+';margin-top:12px;padding-top:12px;display:flex;gap:6px;\">';\n    html += '<input id=\"pca-favm-newname\" placeholder=\"新分组名\" style=\"flex:1;background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:6px 10px;color:'+pcaC.text+';font-size:12px;\" />';\n    html += '<button data-pca-action=\"favm-create\" class=\"pca-modal-btn-primary\" style=\"padding:6px 14px;font-size:12px;\">+ 新建</button>';\n    html += '</div>';\n    html += '</div></div></div>';\n\n    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');\n    var wrap = doc.createElement('div'); wrap.innerHTML = html;\n    var overlayEl = wrap.firstChild;\n    if (existingDialog) existingDialog.appendChild(overlayEl); else doc.body.appendChild(overlayEl);\n\n    // input 用 change 提交重命名\n    overlayEl.querySelectorAll('input[data-pca-action=\"favm-rename\"]').forEach(function(inp) {\n        inp.addEventListener('change', function() {\n            var gid = inp.getAttribute('data-pca-gid');\n            if (pcaRenameFavGroup(gid, inp.value)) {\n                toastr.success('已重命名');\n                pcaRenderMigrate();\n            }\n        });\n    });\n\n    overlayEl.addEventListener('click', function(e) {\n        e.stopPropagation();\n        var t = e.target;\n        while (t && t !== overlayEl) {\n            if (t.getAttribute && t.getAttribute('data-pca-action')) break;\n            t = t.parentElement;\n        }\n        if (!t || t === overlayEl) return;\n        var act = t.getAttribute('data-pca-action');\n        var gid = t.getAttribute('data-pca-gid');\n        if (act === 'favm-close') { overlayEl.remove(); return; }\n        if (act === 'favm-color') {\n            // 循环切换调色板\n            pcaLoadFavGroups();\n            var g = pcaState.migrateFavGroups[gid];\n            if (!g) return;\n            var curIdx = PCA_FAV_PALETTE.indexOf(g.color);\n            var next = PCA_FAV_PALETTE[(curIdx + 1) % PCA_FAV_PALETTE.length];\n            pcaSetFavGroupColor(gid, next);\n            t.style.background = next;\n            pcaRenderMigrate();\n            return;\n        }\n        if (act === 'favm-delete') {\n            pcaShowConfirm('删除分组「'+pcaEsc(pcaState.migrateFavGroups[gid].name)+'」？<br><br>分组下的收藏条目名将一并丢失（不影响实际预设条目）。', function(ok) {\n                if (!ok) return;\n                pcaDeleteFavGroup(gid);\n                overlayEl.remove();\n                pcaRenderFavGroupManager();\n                pcaRenderMigrate();\n                toastr.info('已删除分组');\n            }, { yesText:'删除', noText:'取消', yesColor:pcaC.danger, yesColorDim:'#a04050' });\n            return;\n        }\n        if (act === 'favm-create') {\n            var inp = doc.querySelector('#pca-favm-newname');\n            var name = inp ? (inp.value || '').trim() : '';\n            if (!name) { toastr.warning('请输入分组名'); return; }\n            var newGid = pcaCreateFavGroup(name, null);\n            if (newGid) {\n                overlayEl.remove();\n                pcaRenderFavGroupManager();\n                pcaRenderMigrate();\n            }\n        }\n    });\n}\n\nfunction pcaMigrateInsertEntry(targetPreset, sourceEntry, insertIndex) {\n    var prompts = targetPreset.prompts || [];\n    var order = pcaGetOrder(targetPreset.prompt_order);\n    // 健壮性：先从源预设找原始 prompt，把它的所有字段（包括 injection_position / depth / trigger 等未知字段）整体保留下来\n    var rawOriginal = null;\n    try {\n        var leftPreset = pcaState.leftPresetData;\n        if (leftPreset && Array.isArray(leftPreset.prompts) && sourceEntry._origId) {\n            for (var oi = 0; oi < leftPreset.prompts.length; oi++) {\n                if (leftPreset.prompts[oi] && leftPreset.prompts[oi].identifier === sourceEntry._origId) {\n                    rawOriginal = leftPreset.prompts[oi];\n                    break;\n                }\n            }\n        }\n        if (!rawOriginal && leftPreset && Array.isArray(leftPreset.prompts)) {\n            for (var oi2 = 0; oi2 < leftPreset.prompts.length; oi2++) {\n                var pp = leftPreset.prompts[oi2];\n                if (pp && (pp.identifier === sourceEntry.id || pp.name === sourceEntry.name)) {\n                    rawOriginal = pp;\n                    break;\n                }\n            }\n        }\n    } catch(_e) {}\n    var newPrompt;\n    if (rawOriginal) {\n        // 深拷贝原始 prompt（保留 injection_position / depth / trigger / system_prompt 等所有字段）\n        newPrompt = JSON.parse(JSON.stringify(rawOriginal));\n        // 用 sourceEntry 覆盖可编辑字段（id / name / content / role / marker / enabled 都可能被用户改过）\n        newPrompt.identifier = sourceEntry.id;\n        newPrompt.name = sourceEntry.name;\n        newPrompt.content = sourceEntry.content || '';\n        newPrompt.role = sourceEntry.role || newPrompt.role || 'system';\n        newPrompt.marker = !!(sourceEntry.marker || newPrompt.marker);\n        if (typeof sourceEntry.system_prompt === 'boolean') newPrompt.system_prompt = sourceEntry.system_prompt;\n    } else {\n        // 兜底：原始字段拿不到时按旧逻辑构造\n        newPrompt = {\n            identifier: sourceEntry.id,\n            name: sourceEntry.name,\n            content: sourceEntry.content || '',\n            role: sourceEntry.role || 'system',\n            marker: sourceEntry.marker || false,\n            system_prompt: sourceEntry.system_prompt || false,\n        };\n    }\n    // 应用字段编辑覆写（来自二级\"字段\"面板）\n    var fo = sourceEntry._fieldOverrides || null;\n    if (fo) {\n        if (typeof fo.identifier === 'string' && fo.identifier) newPrompt.identifier = fo.identifier;\n        if (typeof fo.name === 'string' && fo.name) newPrompt.name = fo.name;\n        if (typeof fo.role === 'string') newPrompt.role = fo.role;\n        if (typeof fo.injection_position === 'number') newPrompt.injection_position = fo.injection_position;\n        if (typeof fo.injection_depth === 'number') newPrompt.injection_depth = fo.injection_depth;\n        if (typeof fo.injection_order === 'number') newPrompt.injection_order = fo.injection_order;\n        if (Array.isArray(fo.injection_trigger)) {\n            newPrompt.injection_trigger = fo.injection_trigger.slice();\n        } else if (fo.injection_trigger === null && Object.prototype.hasOwnProperty.call(newPrompt, 'injection_trigger')) {\n            delete newPrompt.injection_trigger;\n        }\n        if (typeof fo.system_prompt === 'boolean') newPrompt.system_prompt = fo.system_prompt;\n        if (typeof fo.marker === 'boolean') newPrompt.marker = fo.marker;\n        if (typeof fo.forbid_overrides === 'boolean') newPrompt.forbid_overrides = fo.forbid_overrides;\n    }\n    prompts.push(newPrompt);\n    targetPreset.prompts = prompts;\n    // order 用最终 identifier（可能被字段覆写改过）\n    var finalIdentifier = newPrompt.identifier || sourceEntry.id;\n    var orderItem = { identifier: finalIdentifier, enabled: sourceEntry.enabled };\n    if (insertIndex < 0 || insertIndex >= order.length) { order.push(orderItem); }\n    else { order.splice(insertIndex, 0, orderItem); }\n}\n\nfunction pcaBuildHTML(presetNames) {\n    var opts = '<option value=\"\">-- 请选择预设 --</option>';\n    presetNames.forEach(function(n){var dn=n.text||n.value;opts+='<option value=\"'+pcaAttr(dn)+'\">'+pcaEsc(dn)+'</option>';});\n\n    var h = '<div id=\"pca-root\" style=\"font-family:'+pcaC._fontSans+';color:'+pcaC.text+';width:min(880px,96vw);max-height:min(88vh,1000px);max-height:min(88dvh,1000px);background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;overflow:hidden;position:relative;\">';\n    // ====== Header（祭坛石碑：标题大字 + v2.7 副标题下沉；无边框；底部红光带）======\n    h += '<div class=\"pca-pad-x pca-header-bar\" style=\"padding:18px 22px 14px;display:flex;align-items:flex-start;justify-content:space-between;flex-shrink:0;gap:8px;flex-wrap:wrap;\">';\n    h += '<div style=\"display:flex;flex-direction:column;align-items:flex-start;min-width:0;\">';\n    h += '<span class=\"pca-title pca-title-shine\">预设对比助手</span>';\n    h += '<span class=\"pca-subtitle\">v 2 . 7</span>';\n    h += '</div>';\n    h += '<div class=\"pca-toolbar\" style=\"display:flex;align-items:center;gap:14px;\">';\n    // 主题切换（无边框）\n    var themeOpts = '';\n    Object.keys(pcaThemes).forEach(function(k){\n        var sel = (k === pcaC._themeName) ? ' selected' : '';\n        themeOpts += '<option value=\"'+pcaAttr(k)+'\"'+sel+'>'+pcaEsc(pcaThemes[k].name)+'</option>';\n    });\n    h += '<select id=\"pca-theme-select\" class=\"pca-tool-select\" title=\"切换主题\">'+themeOpts+'</select>';\n    h += '<span data-pca-action=\"debug-toggle\" class=\"pca-tool-link\" title=\"调试\">调试</span>';\n    h += '<span data-pca-action=\"close\" class=\"pca-tool-link\" title=\"关闭\" style=\"font-size:18px;line-height:1;\">×</span>';\n    h += '</div></div>';\n\n    // ====== 选预设 + 主操作按钮 ======\n    h += '<div class=\"pca-pad-x pca-toolbar\" style=\"padding:14px 22px;border-bottom:1px solid '+pcaC.border+';display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;flex-shrink:0;\">';\n    h += '<div style=\"flex:1;min-width:140px;\"><div style=\"font-size:11px;color:'+pcaC.textDim+';margin-bottom:5px;font-weight:600;letter-spacing:0.3px;text-transform:uppercase;\">旧预设 · 源</div>';\n    h += '<select id=\"pca-sel-left\" style=\"width:100%;padding:8px 10px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;font-size:13px;outline:none;\">'+opts+'</select></div>';\n    h += '<div style=\"flex:1;min-width:140px;\"><div style=\"font-size:11px;color:'+pcaC.textDim+';margin-bottom:5px;font-weight:600;letter-spacing:0.3px;text-transform:uppercase;\">新预设 · 目标</div>';\n    h += '<select id=\"pca-sel-right\" style=\"width:100%;padding:8px 10px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;font-size:13px;outline:none;\">'+opts+'</select></div>';\n    h += '<button data-pca-action=\"compare\" class=\"pca-btn-primary pca-glow\">开始对比</button>';\n    h += '</div>';\n\n    h += '<div id=\"pca-debug-area\" style=\"display:none;max-height:500px;flex-shrink:0;overflow-y:auto;padding:10px 22px;border-bottom:1px solid '+pcaC.border+';background:#0a0a0f;\"><pre id=\"pca-debug-log\" style=\"font-size:11px;color:#888;margin:0;white-space:pre-wrap;word-break:break-all;font-family:Consolas,monospace;\"></pre></div>';\n\n    // ====== Tabs ======\n    h += '<div id=\"pca-tabs\" class=\"pca-pad-x pca-tabs-bar\" style=\"padding:0 22px;border-bottom:1px solid '+pcaC.border+';display:none;flex-shrink:0;\">';\n    h += '<span data-pca-action=\"tab-diff\" id=\"pca-tab-diff\" style=\"display:inline-block;padding:10px 16px;font-size:13px;font-weight:600;border-bottom:2px solid '+pcaC.primary+';color:'+pcaC.primary+';\">开关差异 (0)</span>';\n    h += '<span data-pca-action=\"tab-migrate\" id=\"pca-tab-migrate\" style=\"display:inline-block;padding:10px 16px;font-size:13px;font-weight:600;border-bottom:2px solid transparent;color:'+pcaC.textDim+';\">条目迁移</span>';\n    h += '<span data-pca-action=\"tab-edit\" id=\"pca-tab-edit\" style=\"display:inline-block;padding:10px 16px;font-size:13px;font-weight:600;border-bottom:2px solid transparent;color:'+pcaC.textDim+';\">条目编辑</span>';\n    h += '</div>';\n\n    h += '<div id=\"pca-content\" class=\"pca-pad-x\" style=\"flex:1;overflow-y:auto;padding:14px 22px;min-height:80px;\">';\n    h += '<div style=\"text-align:center;padding:40px 0;color:'+pcaC.textDim+';font-size:14px;\">请选择两个预设后点击「开始对比」</div></div>';\n\n    // ====== Footer ======\n    h += '<div id=\"pca-footer\" class=\"pca-pad-x pca-toolbar\" style=\"padding:12px 22px;border-top:1px solid '+pcaC.border+';display:none;justify-content:flex-end;gap:10px;flex-shrink:0;flex-wrap:wrap;\">';\n    h += '<button data-pca-action=\"syncall\" class=\"pca-btn\" style=\"margin-right:auto;\">全部同步 左→右</button>';\n    h += '<button data-pca-action=\"save\" class=\"pca-btn\">覆盖保存</button>';\n    h += '<button data-pca-action=\"saveas\" class=\"pca-btn-primary pca-glow\">另存为</button>';\n    h += '</div></div>';\n    return h;\n}\n\nfunction pcaRenderDiffs() {\n    var wrap = pcaQ('#pca-content'); if(!wrap)return;\n    if (!pcaState.diffs.length) { wrap.innerHTML='<div style=\"text-align:center;padding:30px;color:'+pcaC.success+';font-size:14px;\">🎉 没有开关差异！</div>'; return; }\n    var html = '';\n    pcaState.diffs.forEach(function(d, i) {\n        var curRight = pcaGetEnabled(pcaState.rightPresetData, d.right.id);\n        var origRight = d.right.enabled;\n        var synced = (curRight === d.left.enabled);\n        var wasModified = (curRight !== origRight);\n        var hasDiff = pcaHasContentDiff(d.left.content, d.right.content);\n\n        html += '<div style=\"background:'+pcaC.card+';border:1px solid '+(synced?'rgba(110,207,138,0.3)':pcaC.border)+';border-radius:10px;padding:12px 16px;margin-bottom:10px;\">';\n        html += '<div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;flex-wrap:wrap;\">';\n        html += '<div class=\"pca-entry-name-id\" style=\"display:flex;align-items:center;gap:8px;flex:1;min-width:0;\">';\n        html += '<span class=\"pca-entry-name\" style=\"font-size:14px;font-weight:600;color:'+pcaC.text+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex-shrink:1;\" title=\"'+pcaAttr(d.right.name)+'\">'+pcaEsc(d.right.name)+'</span>';\n        html += '<span class=\"pca-eid-tag\" style=\"font-size:10px;color:'+pcaC.dim+';background:'+pcaC.card2+';padding:1px 6px;border-radius:3px;flex-shrink:0;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\" title=\"'+pcaAttr(d.right.id)+'\">'+pcaEsc(d.right.id)+'</span>';\n        html += '</div>';\n        html += '<div style=\"display:flex;gap:6px;flex-shrink:0;\">';\n        if (synced) {\n            html += '<span style=\"font-size:11px;color:'+pcaC.success+';background:rgba(110,207,138,0.1);padding:3px 10px;border-radius:20px;\">✓ 已同步</span>';\n            if (wasModified) html += '<span data-pca-action=\"revert\" data-pca-idx=\"'+i+'\" style=\"font-size:11px;color:'+pcaC.danger+';background:rgba(224,96,112,0.1);border:1px solid rgba(224,96,112,0.3);padding:3px 10px;border-radius:20px;\">↩ 回退</span>';\n        } else {\n            html += '<span data-pca-action=\"sync\" data-pca-idx=\"'+i+'\" style=\"font-size:12px;color:'+pcaC.pink+';background:rgba(232,160,191,0.1);border:1px solid '+pcaC.pinkDim+';border-radius:6px;padding:4px 12px;\">← 同步</span>';\n            if (wasModified) html += '<span data-pca-action=\"revert\" data-pca-idx=\"'+i+'\" style=\"font-size:11px;color:'+pcaC.danger+';background:rgba(224,96,112,0.1);border:1px solid rgba(224,96,112,0.3);padding:3px 10px;border-radius:20px;\">↩ 回退</span>';\n        }\n        html += '</div></div>';\n\n        html += '<div style=\"display:flex;align-items:center;gap:16px;font-size:13px;flex-wrap:wrap;\">';\n        html += '<div style=\"flex:1;min-width:120px;\"><span style=\"color:'+pcaC.dim+';\">左(旧)：</span><span style=\"color:'+(d.left.enabled?pcaC.pink:pcaC.off)+';font-weight:600;\">'+(d.left.enabled?'● ON':'○ OFF')+'</span></div>';\n        html += '<div style=\"flex:1;min-width:120px;display:flex;align-items:center;gap:8px;\">';\n        html += '<span style=\"color:'+pcaC.dim+';\">右(新)：</span><span style=\"color:'+(curRight?pcaC.pink:pcaC.off)+';font-weight:600;\">'+(curRight?'● ON':'○ OFF')+'</span>';\n        if (wasModified) html += '<span style=\"font-size:10px;color:'+pcaC.dim+';\"> (原:' + (origRight?'ON':'OFF') + ')</span>';\n        html += '<span data-pca-action=\"toggle\" data-pca-idx=\"'+i+'\" style=\"font-size:11px;color:'+pcaC.dim+';background:'+pcaC.card2+';border:1px solid '+pcaC.border+';border-radius:4px;padding:2px 8px;\">切换</span>';\n        html += '</div></div>';\n\n        html += '<div style=\"display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;\">';\n        html += '<span data-pca-action=\"view\" data-pca-idx=\"'+i+'\" data-pca-side=\"left\" style=\"font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:4px;padding:3px 10px;\">👁 左侧内容</span>';\n        html += '<span data-pca-action=\"view\" data-pca-idx=\"'+i+'\" data-pca-side=\"right\" style=\"font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:4px;padding:3px 10px;\">👁 右侧内容</span>';\n        if (hasDiff) {\n            html += '<span data-pca-action=\"view\" data-pca-idx=\"'+i+'\" data-pca-side=\"diff\" style=\"font-size:11px;color:'+pcaC.gold+';background:rgba(212,168,83,0.15);border:1px solid '+pcaC.goldDim+';border-radius:4px;padding:3px 10px;font-weight:600;\">⚡ 差异对比</span>';\n        } else {\n            html += '<span style=\"font-size:11px;color:'+pcaC.off+';border:1px solid '+pcaC.off+';border-radius:4px;padding:3px 10px;cursor:default;opacity:0.5;\">⚡ 差异对比</span>';\n        }\n        html += '</div>';\n        html += '<div id=\"pca-pv-'+i+'\" style=\"display:none;margin-top:8px;\"></div>';\n        html += '</div>';\n    });\n    wrap.innerHTML = html;\n}\n\nfunction pcaRenderNews() {\n    var wrap = pcaQ('#pca-content'); if(!wrap)return;\n    if (!pcaState.newItems.length) { wrap.innerHTML='<div style=\"text-align:center;padding:30px;color:'+pcaC.dim+';\">没有新增条目</div>'; return; }\n    var html = '';\n    pcaState.newItems.forEach(function(item, i) {\n        var r = item.right;\n        var cur = pcaGetEnabled(pcaState.rightPresetData, r.id);\n        html += '<div style=\"background:'+pcaC.card+';border:1px solid '+pcaC.border+';border-radius:10px;padding:12px 16px;margin-bottom:10px;\">';\n        html += '<div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;flex-wrap:wrap;\">';\n        html += '<div class=\"pca-entry-name-id\" style=\"display:flex;align-items:center;gap:8px;flex:1;min-width:0;\">';\n        html += '<span class=\"pca-entry-name\" style=\"font-size:14px;font-weight:600;color:'+pcaC.gold+';min-width:0;flex-shrink:1;\">★ '+pcaEsc(r.name)+'</span>';\n        html += '<span class=\"pca-eid-tag\" style=\"font-size:10px;color:'+pcaC.dim+';background:'+pcaC.card2+';padding:1px 6px;border-radius:3px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\" title=\"'+pcaAttr(r.id)+'\">'+pcaEsc(r.id)+'</span>';\n        html += '</div>';\n        html += '<div style=\"display:flex;align-items:center;gap:8px;flex-shrink:0;\">';\n        html += '<span style=\"color:'+(cur?pcaC.pink:pcaC.off)+';font-weight:600;font-size:13px;\">'+(cur?'● ON':'○ OFF')+'</span>';\n        html += '<span data-pca-action=\"toggle-new\" data-pca-idx=\"'+i+'\" style=\"font-size:11px;color:'+pcaC.dim+';background:'+pcaC.card2+';border:1px solid '+pcaC.border+';border-radius:4px;padding:2px 8px;\">切换</span>';\n        html += '</div></div>';\n        html += '<span data-pca-action=\"view-new\" data-pca-idx=\"'+i+'\" style=\"font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:4px;padding:3px 10px;\">👁 查看内容</span>';\n        html += '<div id=\"pca-pvn-'+i+'\" style=\"display:none;margin-top:8px;\"></div>';\n        html += '</div>';\n    });\n    wrap.innerHTML = html;\n}\n\n// ========== 条目编辑面板（自改 / 反向迁移 / 整合\"新增条目\"）==========\n// 取目标预设的当前条目数组（应用 editPending 中的 reorder/delete/new 后的状态）\nfunction pcaGetEditTargetEntries() {\n    var t = pcaState.editTarget;\n    var base = (t === 'left') ? pcaState.leftEntries : pcaState.rightEntries;\n    return base ? base.slice() : [];\n}\nfunction pcaGetEditOtherEntries() {\n    var t = pcaState.editTarget;\n    return (t === 'left') ? pcaState.rightEntries : pcaState.leftEntries;\n}\nfunction pcaGetEditTargetName() {\n    return (pcaState.editTarget === 'left') ? pcaState.leftName : pcaState.rightName;\n}\nfunction pcaGetEditTargetPreset() {\n    return (pcaState.editTarget === 'left') ? pcaState.leftPresetData : pcaState.rightPresetData;\n}\n\n// 跳到指定序号 + 高亮\n// kind: 'migrate' | 'edit'\nfunction pcaJumpToEntry(kind, n) {\n    var doc = pcaGetDoc();\n    var sel = (kind === 'migrate') ? '[data-pca-migrate-idx=\"'+n+'\"]' : '[data-pca-edit-idx=\"'+n+'\"]';\n    var el = doc.querySelector(sel);\n    if (!el) { toastr.warning('未找到第 '+n+' 项（可能被筛选隐藏）'); return; }\n    try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(_e) { el.scrollIntoView(); }\n    // 高亮 1.6s\n    var origBoxShadow = el.style.boxShadow;\n    var origBorder = el.style.borderColor;\n    el.style.boxShadow = '0 0 0 2px '+pcaC.gold+', 0 0 16px rgba('+pcaHexToRgb(pcaC.gold)+',0.4)';\n    el.style.borderColor = pcaC.gold;\n    setTimeout(function(){\n        el.style.boxShadow = origBoxShadow;\n        el.style.borderColor = origBorder;\n    }, 1600);\n}\n\nfunction pcaRenderEdit() {\n    var wrap = pcaQ('#pca-content'); if (!wrap) return;\n    if (!pcaState.compared) {\n        wrap.innerHTML = '<div style=\"text-align:center;padding:30px;color:'+pcaC.dim+';\">请先对比预设</div>';\n        return;\n    }\n    var entries = pcaGetEditTargetEntries();\n    var other = pcaGetEditOtherEntries();\n    var otherByName = {}, otherById = {};\n    other.forEach(function(e){ otherByName[e.name] = e; otherById[e.id] = e; });\n\n    var html = '';\n    // 顶部控制栏：选择目标预设 + 搜索 + 仅显示新增\n    html += '<div style=\"display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;\">';\n    html += '<div style=\"display:flex;align-items:center;gap:6px;font-size:12px;color:'+pcaC.dim+';\">编辑目标：</div>';\n    html += '<div style=\"display:inline-flex;border:1px solid '+pcaC.border+';border-radius:6px;overflow:hidden;\">';\n    var leftActive = (pcaState.editTarget === 'left');\n    var rightActive = (pcaState.editTarget === 'right');\n    html += '<span data-pca-action=\"edit-target\" data-pca-side=\"left\" style=\"padding:5px 12px;font-size:12px;cursor:pointer;background:'+(leftActive?pcaC.gold:'transparent')+';color:'+(leftActive?'#fff':pcaC.dim)+';font-weight:'+(leftActive?'700':'500')+';\">📁 旧（'+pcaEsc(pcaState.leftName||'?')+'）</span>';\n    html += '<span data-pca-action=\"edit-target\" data-pca-side=\"right\" style=\"padding:5px 12px;font-size:12px;cursor:pointer;background:'+(rightActive?pcaC.gold:'transparent')+';color:'+(rightActive?'#fff':pcaC.dim)+';font-weight:'+(rightActive?'700':'500')+';\">📂 新（'+pcaEsc(pcaState.rightName||'?')+'）</span>';\n    html += '</div>';\n    html += '<div style=\"flex:1;min-width:140px;\"><input id=\"pca-edit-search\" class=\"pca-search-input\" placeholder=\"🔍 按条目名搜索...\" value=\"'+pcaAttr(pcaState.editSearch)+'\" /></div>';\n    html += '<div style=\"display:flex;align-items:center;gap:4px;flex-shrink:0;\"><span style=\"font-size:11px;color:'+pcaC.dim+';\">跳到</span><input id=\"pca-edit-jump\" type=\"number\" min=\"1\" max=\"'+entries.length+'\" placeholder=\"#\" style=\"width:70px;padding:5px 8px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:4px;font-size:12px;outline:none;text-align:center;\" title=\"输入序号后回车，跳转并高亮条目\" /></div>';\n    html += '<label style=\"display:flex;align-items:center;gap:4px;font-size:11px;color:'+pcaC.dim+';cursor:pointer;\"><input type=\"checkbox\" id=\"pca-edit-only-new\"'+(pcaState.editOnlyNew?' checked':'')+' style=\"cursor:pointer;\" /> 仅显示「目标独有」</label>';\n    html += '</div>';\n\n    // 操作栏：新建条目\n    html += '<div style=\"display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;\">';\n    html += '<button data-pca-action=\"edit-new-entry\" class=\"pca-btn-primary\" style=\"padding:5px 14px;font-size:12px;\">＋ 新建空白条目</button>';\n    html += '<span style=\"font-size:11px;color:'+pcaC.dim+';align-self:center;\">在「'+pcaEsc(pcaGetEditTargetName())+'」中创建一个新条目</span>';\n    html += '</div>';\n\n    // 条目列表\n    if (!entries.length) {\n        html += '<div style=\"text-align:center;padding:30px;color:'+pcaC.dim+';\">没有条目</div>';\n    } else {\n        var search = (pcaState.editSearch || '').toLowerCase();\n        var totalCount = 0;\n        entries.forEach(function(entry, idx) {\n            if (search && entry.name.toLowerCase().indexOf(search) < 0) return;\n            // 是否是「目标独有」\n            var inOther = !!(otherByName[entry.name] || otherById[entry.id]);\n            if (pcaState.editOnlyNew && inOther) return;\n\n            // 找到此条目对应的 pending 项\n            var p = null;\n            for (var pi = 0; pi < pcaState.editPending.length; pi++) {\n                var pp = pcaState.editPending[pi];\n                if (pp.targetId === entry.id || pp.entryId === entry.id) { p = pp; break; }\n            }\n            // 状态条\n            var stTag = '';\n            if (p) {\n                if (p.action === 'overwrite') stTag = '<span style=\"font-size:10px;color:'+pcaC.gold+';background:rgba(212,168,83,0.1);border:1px solid rgba(212,168,83,0.3);padding:1px 8px;border-radius:10px;\">待覆盖</span>';\n                else if (p.action === 'delete') stTag = '<span style=\"font-size:10px;color:'+pcaC.danger+';background:rgba(224,96,112,0.1);border:1px solid rgba(224,96,112,0.3);padding:1px 8px;border-radius:10px;\">待删除</span>';\n                else if (p.action === 'reorder') stTag = '<span style=\"font-size:10px;color:'+pcaC.migrate+';background:'+pcaC.migrateBg+';border:1px solid '+pcaC.migrateBorder+';padding:1px 8px;border-radius:10px;\">待移动→#'+(p.newIndex+1)+'</span>';\n                else if (p.action === 'toggle') stTag = '<span style=\"font-size:10px;color:'+pcaC.info+';background:rgba(255,255,255,0.04);border:1px solid '+pcaC.border+';padding:1px 8px;border-radius:10px;\">待'+(p.enabled?'启用':'禁用')+'</span>';\n            } else if (!inOther) {\n                stTag = '<span style=\"font-size:10px;color:'+pcaC.success+';background:rgba(110,207,138,0.1);border:1px solid rgba(110,207,138,0.3);padding:1px 8px;border-radius:10px;\">★ 目标独有</span>';\n            }\n\n            var cardBg = p ? (p.action === 'delete' ? 'rgba(224,96,112,0.05)' : pcaC.card) : pcaC.card;\n            html += '<div class=\"pca-entry-item\" data-pca-edit-idx=\"'+(idx+1)+'\" style=\"background:'+cardBg+';border:1px solid '+pcaC.border+';border-radius:8px;padding:10px 14px;margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;transition:box-shadow .25s ease,border-color .25s ease;\">';\n            html += '<div style=\"flex:1;min-width:0;\">';\n            html += '<div class=\"pca-entry-name-id\" style=\"display:flex;align-items:center;gap:8px;flex-wrap:wrap;\">';\n            html += '<span style=\"font-size:10px;color:'+pcaC.dim+';min-width:24px;text-align:right;\">#'+(idx+1)+'</span>';\n            // 滑块开关（点击触发 toggle；展示队列预览态）\n            var togglePreview = (p && p.action === 'toggle') ? !!p.enabled : !!entry.enabled;\n            html += '<span class=\"pca-toggle\" data-pca-action=\"edit-toggle\" data-pca-idx=\"'+idx+'\" title=\"点击切换启用/禁用\"><input type=\"checkbox\"'+(togglePreview?' checked':'')+' tabindex=\"-1\" /><span class=\"pca-toggle-slider\"></span></span>';\n            html += '<span class=\"pca-entry-name\" style=\"font-size:13px;font-weight:600;color:'+pcaC.text+';word-break:break-word;\">'+pcaEsc(entry.name)+'</span>';\n            html += stTag;\n            html += '</div>';\n            html += '<div class=\"pca-eid-tag\" style=\"font-size:10px;color:'+pcaC.dim+';background:'+pcaC.card2+';padding:1px 6px;border-radius:3px;margin-top:3px;display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\" title=\"'+pcaAttr(entry.id)+'\">'+pcaEsc(entry.id)+'</div>';\n            html += '</div>';\n            // 操作按钮组\n            html += '<div style=\"display:flex;flex-direction:column;gap:4px;flex-shrink:0;align-items:flex-end;\">';\n            // 顺序输入框（直接跳到序号 N）\n            html += '<div style=\"display:flex;align-items:center;gap:3px;\">';\n            html += '<button data-pca-action=\"edit-move\" data-pca-idx=\"'+idx+'\" data-pca-dir=\"up\" class=\"pca-btn\" style=\"padding:2px 8px;font-size:11px;\" title=\"上移一位\">↑</button>';\n            html += '<input type=\"number\" min=\"1\" max=\"'+entries.length+'\" value=\"'+(idx+1)+'\" style=\"width:50px;padding:2px 4px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:3px;font-size:11px;text-align:center;outline:none;\" data-pca-edit-jump=\"'+idx+'\" title=\"输入序号回车跳转\" />';\n            html += '<button data-pca-action=\"edit-move\" data-pca-idx=\"'+idx+'\" data-pca-dir=\"down\" class=\"pca-btn\" style=\"padding:2px 8px;font-size:11px;\" title=\"下移一位\">↓</button>';\n            html += '</div>';\n            // 编辑 / 删除（启用切换已通过滑块开关在 name 左侧实现）\n            html += '<div style=\"display:flex;gap:4px;\">';\n            html += '<button data-pca-action=\"edit-edit\" data-pca-idx=\"'+idx+'\" class=\"pca-btn\" style=\"padding:3px 10px;font-size:11px;color:'+pcaC.gold+';border-color:'+pcaC.goldDim+';\">✏️ 编辑</button>';\n            html += '<button data-pca-action=\"edit-delete\" data-pca-idx=\"'+idx+'\" class=\"pca-btn pca-btn-danger\" style=\"padding:3px 10px;font-size:11px;\">🗑 删</button>';\n            html += '</div>';\n            html += '</div>';\n            html += '</div>';\n            totalCount++;\n        });\n        if (totalCount === 0) {\n            html += '<div style=\"text-align:center;padding:20px;color:'+pcaC.dim+';\">没有匹配的条目</div>';\n        }\n    }\n    // 底部留白防止队列 dock 遮挡（折叠时只留 52px，展开时留够）\n    html += '<div style=\"height:'+(pcaState.editQueueExpanded&&pcaState.editPending.length>0?'min(280px,45dvh)':'52px')+';flex-shrink:0;\"></div>';\n    wrap.innerHTML = html;\n\n    // 搜索 / 筛选输入绑定\n    var searchInput = pcaGetDoc().querySelector('#pca-edit-search');\n    if (searchInput) {\n        searchInput.addEventListener('input', function() {\n            pcaState.editSearch = searchInput.value || '';\n            pcaRenderEdit();\n            // 保持焦点\n            var ne = pcaGetDoc().querySelector('#pca-edit-search');\n            if (ne) { ne.focus(); ne.setSelectionRange(ne.value.length, ne.value.length); }\n        });\n    }\n    var onlyNewCb = pcaGetDoc().querySelector('#pca-edit-only-new');\n    if (onlyNewCb) {\n        onlyNewCb.addEventListener('change', function() {\n            pcaState.editOnlyNew = onlyNewCb.checked;\n            pcaRenderEdit();\n        });\n    }\n    // 顶部「跳到 N」输入框\n    var jumpInput2 = pcaGetDoc().querySelector('#pca-edit-jump');\n    if (jumpInput2) {\n        jumpInput2.addEventListener('keydown', function(e) {\n            if (e.key !== 'Enter') return;\n            e.preventDefault();\n            var n = parseInt(this.value, 10);\n            if (!n || n < 1 || n > entries.length) { toastr.warning('请输入 1 ~ '+entries.length); return; }\n            pcaJumpToEntry('edit', n);\n        });\n    }\n    // 序号跳转输入框\n    var doc2 = pcaGetDoc();\n    doc2.querySelectorAll('input[data-pca-edit-jump]').forEach(function(inp) {\n        inp.addEventListener('keydown', function(e) {\n            if (e.key === 'Enter') {\n                e.preventDefault();\n                var fromIdx = parseInt(inp.getAttribute('data-pca-edit-jump'), 10);\n                var toIdx = parseInt(inp.value, 10) - 1;\n                if (isNaN(toIdx) || toIdx < 0) { toastr.warning('请输入有效序号'); return; }\n                pcaEditMoveTo(fromIdx, toIdx);\n            }\n        });\n    });\n\n    // 渲染队列 dock\n    pcaRenderEditDock();\n}\n\nfunction pcaRenderEditDock() {\n    var doc = pcaGetDoc();\n    var root = doc.querySelector('#pca-root');\n    if (!root) return;\n    var existing = root.querySelector('#pca-edit-dock');\n    if (existing) existing.remove();\n    if (pcaState.activeTab !== 'edit') return;\n\n    var pendingCount = pcaState.editPending.length;\n    var expanded = pcaState.editQueueExpanded && pendingCount > 0;\n    var dock = doc.createElement('div');\n    dock.id = 'pca-edit-dock';\n    // 留出右侧 14px 不遮挡滚动条\n    dock.style.cssText = 'position:absolute;left:0;right:14px;bottom:0;background:'+pcaC.card2+';border-top:1px solid '+pcaC.goldDim+';box-shadow:0 -4px 16px rgba(0,0,0,0.4);z-index:10;max-height:'+(expanded?'min(280px,50dvh)':'44px')+';display:flex;flex-direction:column;transition:max-height 0.2s;';\n\n    var html = '';\n    // 顶栏（点击切换展开/收起）\n    html += '<div style=\"padding:10px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;user-select:none;\">';\n    html += '<div data-pca-action=\"edit-queue-toggle\" style=\"display:flex;align-items:center;gap:10px;cursor:pointer;flex:1;\">';\n    html += '<span style=\"font-size:13px;font-weight:600;color:'+pcaC.gold+';\">📝 待修改队列</span>';\n    if (pendingCount > 0) {\n        html += '<span style=\"background:'+pcaC.gold+';color:#fff;font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;\">'+pendingCount+'</span>';\n    } else {\n        html += '<span style=\"font-size:11px;color:'+pcaC.dim+';\">（队列为空）</span>';\n    }\n    html += '</div>';\n    html += '<div style=\"display:flex;align-items:center;gap:8px;\">';\n    html += '<span style=\"font-size:11px;color:'+pcaC.dim+';\">编辑「'+pcaEsc(pcaGetEditTargetName())+'」</span>';\n    if (pendingCount > 0) {\n        html += '<span data-pca-action=\"edit-queue-toggle\" style=\"font-size:14px;color:'+pcaC.dim+';cursor:pointer;padding:0 4px;\">'+(expanded?'▼':'▲')+'</span>';\n    }\n    html += '</div>';\n    html += '</div>';\n\n    if (expanded) {\n        html += '<div style=\"flex:1;overflow-y:auto;padding:0 18px 8px;\">';\n        pcaState.editPending.forEach(function(p, pi) {\n            var label = '';\n            var color = pcaC.text;\n            if (p.action === 'new') { label = '＋ 新建'; color = pcaC.success; }\n            else if (p.action === 'overwrite') { label = '↻ 覆盖'; color = pcaC.gold; }\n            else if (p.action === 'delete') { label = '🗑 删除'; color = pcaC.danger; }\n            else if (p.action === 'reorder') { label = '↕ 移动 → #'+(p.newIndex+1); color = pcaC.migrate; }\n            else if (p.action === 'toggle') { label = (p.enabled?'▶ 启用':'⏸ 禁用'); color = pcaC.info; }\n            html += '<div style=\"display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;\">';\n            html += '<span style=\"font-size:11px;color:'+color+';font-weight:600;flex-shrink:0;min-width:80px;\">'+pcaEsc(label)+'</span>';\n            html += '<span style=\"font-size:12px;color:'+pcaC.text+';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\">'+pcaEsc(p.entryName||p.targetName||'')+'</span>';\n            html += '<span data-pca-action=\"edit-pending-remove\" data-pca-idx=\"'+pi+'\" style=\"font-size:11px;color:'+pcaC.danger+';flex-shrink:0;cursor:pointer;padding:0 6px;\">✕</span>';\n            html += '</div>';\n        });\n        html += '</div>';\n    }\n\n    if (expanded) {\n        html += '<div style=\"padding:8px 18px;border-top:1px solid '+pcaC.border+';display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0;\">';\n        if (pcaState.editUndoStack.length > 0) {\n            html += '<button data-pca-action=\"edit-undo\" class=\"pca-btn pca-btn-danger\" style=\"padding:4px 10px;font-size:11px;\">↩ 撤销</button>';\n        }\n        html += '<button data-pca-action=\"edit-clear\" class=\"pca-btn\" style=\"padding:4px 10px;font-size:11px;\">清空</button>';\n        html += '<button data-pca-action=\"edit-apply\" class=\"pca-btn-primary pca-glow\" style=\"padding:5px 16px;font-size:12px;\">应用并保存</button>';\n        html += '</div>';\n    }\n    dock.innerHTML = html;\n    root.appendChild(dock);\n}\n\n// 把同一个 entryId 的旧 pending 移除（避免重复）\nfunction pcaEditRemovePendingOf(entryId) {\n    pcaState.editPending = pcaState.editPending.filter(function(p) {\n        return p.entryId !== entryId && p.targetId !== entryId;\n    });\n}\n\n// 添加 / 替换队列项\nfunction pcaEditAddPending(p) {\n    pcaEditRemovePendingOf(p.entryId || p.targetId);\n    pcaState.editUndoStack.push({ action:'add', index: pcaState.editPending.length });\n    pcaState.editPending.push(p);\n}\n\n// 队列：切换启用\nfunction pcaEditDoToggle(idx) {\n    var entries = pcaGetEditTargetEntries();\n    if (idx < 0 || idx >= entries.length) return;\n    var entry = entries[idx];\n    pcaEditAddPending({ action:'toggle', targetId: entry.id, entryId: entry.id, entryName: entry.name, enabled: !entry.enabled });\n    pcaRenderEdit();\n    toastr.success('已加入队列：' + (!entry.enabled ? '启用' : '禁用') + ' ' + entry.name);\n}\n\n// 队列：删除\nfunction pcaEditDoDelete(idx) {\n    var entries = pcaGetEditTargetEntries();\n    if (idx < 0 || idx >= entries.length) return;\n    var entry = entries[idx];\n    pcaShowConfirm('确认从「'+pcaEsc(pcaGetEditTargetName())+'」中删除条目：<br><br><b>'+pcaEsc(entry.name)+'</b><br><br>（先入队列，应用后才真正删除）', function(ok){\n        if (!ok) return;\n        pcaEditAddPending({ action:'delete', targetId: entry.id, entryId: entry.id, entryName: entry.name });\n        pcaRenderEdit();\n        toastr.warning('已加入删除队列：' + entry.name);\n    }, { yesText:'加入删除队列', noText:'取消', yesColor: pcaC.danger, yesColorDim: '#a04050' });\n}\n\n// 队列：上下移位 / 跳转到指定序号\nfunction pcaEditMoveTo(fromIdx, toIdx) {\n    var entries = pcaGetEditTargetEntries();\n    if (fromIdx < 0 || fromIdx >= entries.length) return;\n    if (toIdx < 0) toIdx = 0;\n    if (toIdx >= entries.length) toIdx = entries.length - 1;\n    if (toIdx === fromIdx) return;\n    var entry = entries[fromIdx];\n    pcaEditAddPending({ action:'reorder', targetId: entry.id, entryId: entry.id, entryName: entry.name, fromIndex: fromIdx, newIndex: toIdx });\n    pcaRenderEdit();\n    toastr.info('已加入移动队列：' + entry.name + ' → 第 ' + (toIdx+1) + ' 位');\n}\n\n// 队列：新建空白条目\nfunction pcaEditDoNewEntry() {\n    var newId = pcaGenEntryId();\n    var newEntry = {\n        id: newId,\n        name: '新条目',\n        enabled: true,\n        content: '',\n        role: 'system',\n        marker: false,\n        _isNew: true,\n    };\n    pcaEditAddPending({\n        action:'new',\n        targetId: newId,\n        entryId: newId,\n        entryName: newEntry.name,\n        entry: newEntry,\n        insertIndex: pcaGetEditTargetEntries().length,\n    });\n    pcaRenderEdit();\n    pcaOpenEditor(newEntry, { isEditTarget: true });\n}\n\n// 队列：编辑（覆盖）\nfunction pcaEditDoEdit(idx) {\n    var entries = pcaGetEditTargetEntries();\n    if (idx < 0 || idx >= entries.length) return;\n    var entry = entries[idx];\n    // 复用 pcaOpenEditor — 但需要标记为 edit 模式（保存后入 edit 队列而不是 migrate 队列）\n    pcaOpenEditor(entry, { isEditTarget: true });\n}\n\nfunction pcaGetMigrateFilterNames() {\n    var names = [];\n    if (pcaState.migrateFavActive) {\n        var favNames = pcaGetActiveFavNames();\n        if (favNames && favNames.length > 0) names = favNames.slice();\n    }\n    if (pcaState.migrateSearch) {\n        names.push(pcaState.migrateSearch);\n    }\n    return names;\n}\n\nfunction pcaMatchesFilter(entryName, filterNames) {\n    if (!filterNames.length) return true;\n    var lower = entryName.toLowerCase();\n    for (var i = 0; i < filterNames.length; i++) {\n        if (lower.indexOf(filterNames[i].toLowerCase()) !== -1) return true;\n    }\n    return false;\n}\n\nvar pcaComposing = false;\n\nfunction pcaContentEqual(a, b) {\n    return (a || '') === (b || '');\n}\n\nfunction pcaRenderMigrate() {\n    var wrap = pcaQ('#pca-content'); if(!wrap)return;\n    if (!pcaState.compared) {\n        wrap.innerHTML='<div style=\"text-align:center;padding:30px;color:'+pcaC.dim+';\">请先对比预设</div>';\n        return;\n    }\n\n    var leftEntries = pcaState.leftEntries;\n    var rightEntries = pcaState.rightEntries;\n    var rightById = {};\n    var rightByName = {};\n    rightEntries.forEach(function(e) { rightById[e.id] = e; rightByName[e.name] = e; });\n\n    // 先确定每个左侧条目的状态（是否在右侧已存在 + 内容是否相同）\n    function getEntryStatus(entry) {\n        var pendingItem = null;\n        pcaState.migratePending.forEach(function(p) { if (p.entry.id === entry.id) pendingItem = p; });\n        // name 优先（用户视角）→ id 兜底\n        var rightMatch = rightByName[entry.name] || rightById[entry.id] || null;\n        var exists = !!rightMatch;\n        var contentSame = rightMatch ? pcaContentEqual(entry.content, rightMatch.content) : false;\n        return { pending: pendingItem, rightMatch: rightMatch, exists: exists, contentSame: contentSame };\n    }\n\n    var filterNames = pcaGetMigrateFilterNames();\n    var filteredLeft = leftEntries.filter(function(e) {\n        if (!pcaMatchesFilter(e.name, filterNames)) return false;\n        var st = getEntryStatus(e);\n        if (pcaState.migrateFilterStatus === 'exists' && !st.exists) return false;\n        if (pcaState.migrateFilterStatus === 'new' && st.exists) return false;\n        if (pcaState.migrateFilterDiff === 'diff') {\n            // 内容有差异：目标已有但内容不同；或者目标没有（也算差异）\n            if (st.exists && st.contentSame) return false;\n        }\n        if (pcaState.migrateFilterDiff === 'same') {\n            // 内容相同：必须目标已有且内容相同\n            if (!st.exists || !st.contentSame) return false;\n        }\n        return true;\n    });\n\n    var html = '';\n\n    // 收藏夹（含分组）\n    var favGroups = pcaState.migrateFavGroups || {};\n    var favGroupIds = Object.keys(favGroups);\n    var activeGid = pcaState.activeFavGroupId || '';\n    var activeGroup = activeGid ? favGroups[activeGid] : null;\n    var activeNotes = activeGid ? ((activeGroup && activeGroup.notes) || []) : (pcaState.migrateNotes || []);\n    var activeColor = activeGid ? ((activeGroup && activeGroup.color) || pcaC.gold) : pcaC.dim;\n    var activeName = activeGid ? ((activeGroup && activeGroup.name) || '?') : '未分组';\n\n    html += '<div style=\"background:'+pcaC.card+';border:1px solid '+pcaC.border+';border-radius:10px;padding:12px 16px;margin-bottom:14px;\">';\n    html += '<div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px;\">';\n    html += '<span style=\"font-size:13px;font-weight:600;color:'+pcaC.gold+';\">⭐ 收藏夹</span>';\n    html += '<div style=\"display:flex;gap:8px;align-items:center;\">';\n    var favBtnColor = pcaState.migrateFavActive ? pcaC.gold : pcaC.dim;\n    var favBtnBg = pcaState.migrateFavActive ? 'rgba(212,168,83,0.15)' : 'transparent';\n    html += '<span data-pca-action=\"fav-toggle-all\" style=\"font-size:11px;color:'+favBtnColor+';background:'+favBtnBg+';border:1px solid '+(pcaState.migrateFavActive?pcaC.goldDim:pcaC.border)+';border-radius:6px;padding:3px 10px;cursor:pointer;\">'+(pcaState.migrateFavActive?'✓ 已筛选收藏':'☆ 显示全部收藏')+'</span>';\n    html += '<span data-pca-action=\"fav-mgr-open\" title=\"管理分组\" style=\"font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;cursor:pointer;\">🗂 管理分组</span>';\n    html += '</div></div>';\n\n    // 分组标签栏\n    html += '<div style=\"display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;\">';\n    var ungroupedActive = (activeGid === '');\n    html += '<span data-pca-action=\"fav-tab-pick\" data-pca-gid=\"\" style=\"display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 10px;border-radius:12px;cursor:pointer;border:1px solid '+(ungroupedActive?pcaC.goldDim:pcaC.border)+';background:'+(ungroupedActive?'rgba(212,168,83,0.15)':'transparent')+';color:'+(ungroupedActive?pcaC.gold:pcaC.dim)+';\">';\n    html += '<span style=\"width:8px;height:8px;border-radius:50%;background:'+pcaC.dim+';\"></span>';\n    html += '📂 未分组 <span style=\"opacity:0.7;\">('+(pcaState.migrateNotes||[]).length+')</span></span>';\n    favGroupIds.forEach(function(gid) {\n        var g = favGroups[gid];\n        var isAct = (activeGid === gid);\n        var col = g.color || pcaC.gold;\n        html += '<span data-pca-action=\"fav-tab-pick\" data-pca-gid=\"'+pcaAttr(gid)+'\" style=\"display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 10px;border-radius:12px;cursor:pointer;border:1px solid '+(isAct?col:pcaC.border)+';background:'+(isAct?(col+'22'):'transparent')+';color:'+(isAct?col:pcaC.dim)+';\">';\n        html += '<span style=\"width:8px;height:8px;border-radius:50%;background:'+col+';\"></span>';\n        html += pcaEsc(g.name)+' <span style=\"opacity:0.7;\">('+((g.notes||[]).length)+')</span></span>';\n    });\n    html += '<span data-pca-action=\"fav-mgr-open\" title=\"新建分组\" style=\"display:inline-flex;align-items:center;font-size:11px;padding:3px 10px;border-radius:12px;cursor:pointer;border:1px dashed '+pcaC.border+';color:'+pcaC.dim+';\">➕ 新建</span>';\n    html += '</div>';\n\n    html += '<div style=\"display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;\">';\n    html += '<input id=\"pca-note-input\" class=\"pca-search-input\" style=\"flex:1;min-width:140px;\" placeholder=\"输入条目名字加入「'+pcaEsc(activeName)+'」\" />';\n    html += '<button data-pca-action=\"note-add\" style=\"padding:5px 14px;background:'+(activeGid?activeColor:pcaC.migrate)+';color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer;\">+ 添加到本组</button>';\n    html += '</div>';\n    html += '<div id=\"pca-notes-list\" style=\"display:flex;flex-wrap:wrap;min-height:24px;\">';\n    if (activeNotes.length === 0) {\n        html += '<span style=\"color:'+pcaC.dim+';font-size:12px;padding:4px;\">「'+pcaEsc(activeName)+'」暂无收藏</span>';\n    } else {\n        activeNotes.forEach(function(note, ni) {\n            html += '<span class=\"pca-note-tag\" style=\"border-color:'+activeColor+'55;\">';\n            html += '<span class=\"pca-note-find\" data-pca-action=\"note-find\" data-pca-idx=\"'+ni+'\" title=\"单独搜索此条目\">🔍</span> ';\n            html += '<span class=\"pca-note-text\">'+pcaEsc(note)+'</span>';\n            html += ' <span class=\"pca-note-x\" data-pca-action=\"note-del\" data-pca-idx=\"'+ni+'\" title=\"从本组移除\">×</span>';\n            html += '</span>';\n        });\n    }\n    html += '</div></div>';\n\n    // 搜索 + 序号跳转 + 筛选\n    html += '<div style=\"display:flex;gap:10px;margin-bottom:10px;align-items:center;flex-wrap:wrap;\">';\n    html += '<div style=\"flex:1;min-width:140px;\"><input id=\"pca-migrate-search\" class=\"pca-search-input\" placeholder=\"🔍 按条目名字搜索...\" value=\"'+pcaAttr(pcaState.migrateSearch)+'\" /></div>';\n    html += '<div style=\"display:flex;align-items:center;gap:4px;flex-shrink:0;\"><span style=\"font-size:11px;color:'+pcaC.dim+';\">跳到</span><input id=\"pca-migrate-jump\" type=\"number\" min=\"1\" max=\"'+leftEntries.length+'\" placeholder=\"#\" style=\"width:70px;padding:5px 8px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:4px;font-size:12px;outline:none;text-align:center;\" title=\"输入序号后回车，跳转并高亮条目\" /></div>';\n    html += '<span style=\"font-size:12px;color:'+pcaC.dim+';white-space:nowrap;\">'+filteredLeft.length+' / '+leftEntries.length+' 条</span>';\n    if (pcaState.migrateSearch || pcaState.migrateFavActive || pcaState.migrateFilterStatus!=='all' || pcaState.migrateFilterDiff!=='all') {\n        html += '<span data-pca-action=\"migrate-clear-filter\" style=\"font-size:11px;color:'+pcaC.danger+';border:1px solid rgba(224,96,112,0.3);border-radius:6px;padding:3px 10px;white-space:nowrap;\">✕ 清除筛选</span>';\n    }\n    html += '</div>';\n\n    // 状态筛选 + 差异筛选 按钮组\n    function btnStyle(active, color) {\n        if (active) return 'background:'+(color==='gold'?'rgba(212,168,83,0.15)':'rgba(142,184,229,0.15)')+';color:'+(color==='gold'?pcaC.gold:pcaC.migrate)+';border:1px solid '+(color==='gold'?pcaC.goldDim:pcaC.migrateBorder)+';';\n        return 'background:transparent;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';';\n    }\n    html += '<div style=\"display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;\">';\n    html += '<span style=\"font-size:11px;color:'+pcaC.dim+';margin-right:4px;\">状态:</span>';\n    html += '<span data-pca-action=\"filter-status\" data-pca-val=\"all\" style=\"font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterStatus==='all','migrate')+'\">全部</span>';\n    html += '<span data-pca-action=\"filter-status\" data-pca-val=\"new\" style=\"font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterStatus==='new','migrate')+'\">仅目标未有</span>';\n    html += '<span data-pca-action=\"filter-status\" data-pca-val=\"exists\" style=\"font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterStatus==='exists','migrate')+'\">仅目标已有</span>';\n    html += '<span style=\"font-size:11px;color:'+pcaC.dim+';margin:0 4px 0 10px;\">内容:</span>';\n    html += '<span data-pca-action=\"filter-diff\" data-pca-val=\"all\" style=\"font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterDiff==='all','gold')+'\">全部</span>';\n    html += '<span data-pca-action=\"filter-diff\" data-pca-val=\"diff\" style=\"font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterDiff==='diff','gold')+'\">仅有差异</span>';\n    html += '<span data-pca-action=\"filter-diff\" data-pca-val=\"same\" style=\"font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterDiff==='same','gold')+'\">仅相同</span>';\n    html += '</div>';\n\n    html += '<div style=\"font-size:13px;font-weight:600;color:'+pcaC.pink+';margin-bottom:8px;\">📁 旧预设「'+pcaEsc(pcaState.leftName)+'」条目</div>';\n\n    // 批量操作栏\n    var selectedCount = 0;\n    if (pcaState.migrateSelected) {\n        Object.keys(pcaState.migrateSelected).forEach(function(k) { if (pcaState.migrateSelected[k]) selectedCount++; });\n    }\n    var hasSelection = selectedCount > 0;\n    html += '<div style=\"background:'+pcaC.card2+';border:1px solid '+pcaC.border+';border-radius:8px;padding:8px 12px;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;\">';\n    html += '<span style=\"font-size:11px;color:'+pcaC.dim+';margin-right:4px;\">批量:</span>';\n    html += '<span data-pca-action=\"batch-select-all\" style=\"font-size:11px;color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;\">☑ 全选可见</span>';\n    html += '<span data-pca-action=\"batch-invert\" style=\"font-size:11px;color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;\">⇅ 反选</span>';\n    html += '<span data-pca-action=\"batch-clear\" style=\"font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;\">✕ 清空选择</span>';\n    if (hasSelection) {\n        html += '<span style=\"flex:1;font-size:11px;color:'+pcaC.migrate+';font-weight:600;text-align:right;min-width:70px;\">已选 '+selectedCount+' 项</span>';\n        html += '<button data-pca-action=\"batch-migrate\" class=\"pca-btn-primary\" style=\"padding:5px 14px;font-size:12px;\">✨ 一键智能迁移已选</button>';\n        html += '<button data-pca-action=\"batch-fav\" class=\"pca-btn\" style=\"padding:4px 10px;font-size:11px;\" title=\"加入收藏夹（分组功能开发中）\">⭐ 加入收藏</button>';\n    } else {\n        html += '<span style=\"flex:1;font-size:11px;color:'+pcaC.dim+';text-align:right;min-width:70px;\">勾选条目后批量操作</span>';\n    }\n    html += '</div>';\n\n    if (filteredLeft.length === 0) {\n        html += '<div style=\"text-align:center;padding:20px;color:'+pcaC.dim+';\">没有匹配的条目</div>';\n    } else {\n        filteredLeft.forEach(function(entry) {\n            var origIdx = -1;\n            for (var oi = 0; oi < leftEntries.length; oi++) { if (leftEntries[oi] === entry) { origIdx = oi; break; } }\n\n            var st = getEntryStatus(entry);\n            var alreadyPending = !!st.pending;\n\n            var statusBadge = '';\n            if (alreadyPending) {\n                statusBadge = '<span style=\"font-size:10px;color:'+pcaC.migrate+';background:'+pcaC.migrateBg+';border:1px solid '+pcaC.migrateBorder+';padding:1px 8px;border-radius:10px;\">已在队列</span>';\n            } else if (st.exists) {\n                if (st.contentSame) {\n                    statusBadge = '<span style=\"font-size:10px;color:'+pcaC.success+';background:rgba(110,207,138,0.1);border:1px solid rgba(110,207,138,0.3);padding:1px 8px;border-radius:10px;\">目标已有·内容相同</span>';\n                } else {\n                    statusBadge = '<span style=\"font-size:10px;color:'+pcaC.gold+';background:rgba(212,168,83,0.1);border:1px solid rgba(212,168,83,0.3);padding:1px 8px;border-radius:10px;\">目标已有·内容不同</span>';\n                }\n            } else {\n                statusBadge = '<span style=\"font-size:10px;color:'+pcaC.dim+';background:'+pcaC.card2+';border:1px solid '+pcaC.border+';padding:1px 8px;border-radius:10px;\">目标未有</span>';\n            }\n\n            var isSelected = !!(pcaState.migrateSelected && pcaState.migrateSelected[entry.id]);\n            var selBorder = isSelected ? pcaC.migrateBorder : pcaC.border;\n            var selBg = isSelected ? 'rgba(142,184,229,0.06)' : pcaC.card;\n            html += '<div class=\"pca-entry-item\" data-pca-migrate-idx=\"'+(origIdx+1)+'\" style=\"background:'+selBg+';border:1px solid '+selBorder+';border-radius:8px;padding:10px 14px;margin-bottom:6px;transition:box-shadow .25s ease,border-color .25s ease;\">';\n            html += '<div style=\"display:flex;align-items:center;gap:10px;\">';\n            // 复选框（旧版条目唯一标识用 entry.id）\n            html += '<span data-pca-action=\"batch-toggle\" data-pca-entry-id=\"'+pcaAttr(entry.id)+'\" style=\"flex-shrink:0;font-size:16px;color:'+(isSelected?pcaC.migrate:pcaC.dim)+';padding:2px 4px;user-select:none;\" title=\"选中以批量操作\">'+(isSelected?'☑':'☐')+'</span>';\n            html += '<span style=\"font-size:10px;color:'+pcaC.dim+';flex-shrink:0;min-width:28px;text-align:right;\">#'+(origIdx+1)+'</span>';\n            html += '<div style=\"flex:1;min-width:0;\">';\n            html += '<div class=\"pca-entry-name-id\" style=\"display:flex;align-items:center;gap:6px;flex-wrap:wrap;\">';\n            html += '<span class=\"pca-entry-name\" style=\"font-size:13px;font-weight:600;color:'+pcaC.text+';word-break:break-word;\">'+pcaEsc(entry.name)+'</span>';\n            html += '<span style=\"color:'+(entry.enabled?pcaC.pink:pcaC.off)+';font-size:11px;flex-shrink:0;\">'+(entry.enabled?'ON':'OFF')+'</span>';\n            html += statusBadge;\n            html += '</div>';\n            html += '<div class=\"pca-eid-tag\" style=\"font-size:10px;color:'+pcaC.dim+';background:'+pcaC.card2+';padding:1px 6px;border-radius:3px;margin-top:3px;display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\" title=\"'+pcaAttr(entry.id)+'\">'+pcaEsc(entry.id)+'</div>';\n            html += '</div>';\n\n            if (!alreadyPending) {\n                html += '<div style=\"display:flex;flex-direction:column;gap:4px;flex-shrink:0;align-self:center;\">';\n                html += '<button data-pca-action=\"migrate-add\" data-pca-idx=\"'+origIdx+'\" class=\"pca-btn-primary\" style=\"padding:4px 12px;font-size:11px;\">📦 迁移</button>';\n                // 目标已有同名条目时多一个「复制为新条目」入口（生成新 ID，作为独立条目入队列）\n                if (st.exists) {\n                    html += '<button data-pca-action=\"migrate-add-as-new\" data-pca-idx=\"'+origIdx+'\" class=\"pca-btn\" style=\"padding:4px 10px;font-size:11px;color:'+pcaC.success+';border-color:rgba(110,207,138,0.3);\" title=\"保留目标已有那条，再新增一份此条目（生成新 ID）\">🆕 复制为新条目</button>';\n                }\n                html += '<button data-pca-action=\"migrate-edit\" data-pca-idx=\"'+origIdx+'\" class=\"pca-btn\" style=\"padding:4px 10px;font-size:11px;\">✏️ 编辑后迁移</button>';\n                html += '</div>';\n            }\n\n            html += '</div>';\n            html += '<div style=\"margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;\">';\n            html += '<span data-pca-action=\"migrate-preview\" data-pca-idx=\"'+origIdx+'\" style=\"font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:4px;padding:2px 8px;\">👁 预览</span>';\n            if (st.exists && !st.contentSame) {\n                html += '<span data-pca-action=\"migrate-diff\" data-pca-idx=\"'+origIdx+'\" style=\"font-size:11px;color:'+pcaC.gold+';background:rgba(212,168,83,0.1);border:1px solid '+pcaC.goldDim+';border-radius:4px;padding:2px 8px;\">⚡ 差异对比</span>';\n            }\n            html += '</div>';\n            html += '<div id=\"pca-mpv-'+origIdx+'\" style=\"display:none;margin-top:6px;\"></div>';\n            html += '</div>';\n        });\n    }\n\n    // 底部留白，避免被悬浮队列遮挡（手机端用 dvh 兜底，避免占用过多可视区）\n    html += '<div style=\"height:'+(pcaState.migrateQueueExpanded?'min(280px,45dvh)':'52px')+';flex-shrink:0;\"></div>';\n\n    wrap.innerHTML = html;\n\n    var searchInput = pcaGetDoc().querySelector('#pca-migrate-search');\n    if (searchInput) {\n        searchInput.addEventListener('compositionstart', function() { pcaComposing = true; });\n        searchInput.addEventListener('compositionend', function() {\n            pcaComposing = false;\n            pcaState.migrateSearch = this.value;\n            pcaRenderMigrate();\n        });\n        searchInput.addEventListener('input', function() {\n            if (pcaComposing) return;\n            pcaState.migrateSearch = this.value;\n            pcaRenderMigrate();\n        });\n    }\n    var jumpInput = pcaGetDoc().querySelector('#pca-migrate-jump');\n    if (jumpInput) {\n        jumpInput.addEventListener('keydown', function(e) {\n            if (e.key !== 'Enter') return;\n            e.preventDefault();\n            var n = parseInt(this.value, 10);\n            if (!n || n < 1 || n > leftEntries.length) { toastr.warning('请输入 1 ~ '+leftEntries.length); return; }\n            pcaJumpToEntry('migrate', n);\n        });\n    }\n    var noteInput = pcaGetDoc().querySelector('#pca-note-input');\n    if (noteInput) {\n        noteInput.addEventListener('keydown', function(e) {\n            if (e.key === 'Enter') pcaAddNote();\n        });\n    }\n\n    pcaRenderQueueDock();\n}\n\nfunction pcaRenderQueueDock() {\n    var doc = pcaGetDoc();\n    var root = doc.querySelector('#pca-root');\n    if (!root) return;\n\n    var existing = root.querySelector('#pca-queue-dock');\n    if (existing) existing.remove();\n\n    if (pcaState.activeTab !== 'migrate') return;\n\n    var pendingCount = pcaState.migratePending.length;\n    var expanded = pcaState.migrateQueueExpanded;\n\n    var dock = doc.createElement('div');\n    dock.id = 'pca-queue-dock';\n    // 留出右侧空间不遮挡内容区滚动条（约 12-14px）\n    dock.style.cssText = 'position:absolute;left:0;right:14px;bottom:0;background:'+pcaC.card2+';border-top:1px solid '+pcaC.migrateBorder+';box-shadow:0 -4px 16px rgba(0,0,0,0.4);z-index:10;max-height:'+(expanded?'min(320px,50dvh)':'44px')+';display:flex;flex-direction:column;transition:max-height 0.2s;';\n\n    var html = '';\n    // 顶部条\n    html += '<div style=\"padding:10px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;user-select:none;\">';\n    html += '<div data-pca-action=\"queue-toggle\" style=\"display:flex;align-items:center;gap:10px;cursor:pointer;flex:1;\">';\n    html += '<span style=\"font-size:13px;font-weight:600;color:'+pcaC.migrate+';\">📦 待迁移队列</span>';\n    if (pendingCount > 0) {\n        html += '<span style=\"background:'+pcaC.migrate+';color:#fff;font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;\">'+pendingCount+'</span>';\n    } else {\n        html += '<span style=\"font-size:11px;color:'+pcaC.dim+';\">（队列为空）</span>';\n    }\n    html += '</div>';\n    html += '<div style=\"display:flex;align-items:center;gap:8px;\">';\n    html += '<span data-pca-action=\"conf-help-popover\" style=\"font-size:11px;color:'+pcaC.gold+';border:1px solid '+pcaC.goldDim+';border-radius:6px;padding:3px 10px;cursor:help;white-space:nowrap;\" title=\"点击查看智能定位置信度说明\">📍 智能定位置信度说明</span>';\n    html += '<span data-pca-action=\"queue-toggle\" style=\"font-size:14px;color:'+pcaC.dim+';cursor:pointer;padding:0 4px;\">'+(expanded?'▼':'▲')+'</span>';\n    html += '</div>';\n    html += '</div>';\n\n    if (expanded) {\n        // 列表\n        html += '<div style=\"flex:1;overflow-y:auto;padding:0 18px 8px;\">';\n        if (pendingCount === 0) {\n            html += '<div style=\"text-align:center;padding:20px;color:'+pcaC.dim+';font-size:12px;\">从上方点击「📦 迁移」按钮添加条目</div>';\n        } else {\n            pcaState.migratePending.forEach(function(p, pi) {\n                var typeLabel = p.action === 'overwrite' ? '<span style=\"color:'+pcaC.gold+';\">覆盖</span>' : '<span style=\"color:'+pcaC.success+';\">新建</span>';\n                var posLabel = '';\n                if (p.action === 'new') {\n                    if (p.insertAfterName) {\n                        posLabel = ' → 在「'+pcaEsc(p.insertAfterName)+'」后';\n                    } else if (p.insertBeforeName) {\n                        posLabel = ' → 在「'+pcaEsc(p.insertBeforeName)+'」前';\n                    } else if (p.insertIndex === 0) {\n                        posLabel = ' → 最顶部';\n                    } else {\n                        posLabel = ' → 末尾';\n                    }\n                }\n                // 置信度色标\n                var confTag = '';\n                if (p.action === 'new') {\n                    if (p.confidence === 'high') confTag = '<span title=\"智能定位：高置信\" style=\"color:'+pcaC.success+';font-size:10px;margin-left:4px;\">🟢</span>';\n                    else if (p.confidence === 'medium') confTag = '<span title=\"智能定位：中置信\" style=\"color:'+pcaC.gold+';font-size:10px;margin-left:4px;\">🟡</span>';\n                    else if (p.confidence === 'low') confTag = '<span title=\"智能定位：低置信，建议手工调整\" style=\"color:'+pcaC.danger+';font-size:10px;margin-left:4px;\">🔴</span>';\n                }\n                var editedTag = p._edited ? '<span title=\"内容已编辑\" style=\"color:'+pcaC.gold+';font-size:10px;margin-left:4px;\">✏️</span>' : '';\n                html += '<div style=\"display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;\">';\n                html += '<span style=\"font-size:12px;color:'+pcaC.text+';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\">'+typeLabel+confTag+editedTag+' '+pcaEsc(p.entry.name)+'<span style=\"color:'+pcaC.dim+';font-size:11px;\">'+posLabel+'</span></span>';\n                html += '<span data-pca-action=\"migrate-repos\" data-pca-idx=\"'+pi+'\" style=\"font-size:11px;color:'+pcaC.migrate+';flex-shrink:0;cursor:pointer;padding:0 6px;\" title=\"改位置\">📍</span>';\n                html += '<span data-pca-action=\"migrate-edit-pending\" data-pca-idx=\"'+pi+'\" style=\"font-size:11px;color:'+pcaC.gold+';flex-shrink:0;cursor:pointer;padding:0 6px;\" title=\"编辑此队列项\">✏️</span>';\n                html += '<span data-pca-action=\"migrate-remove\" data-pca-idx=\"'+pi+'\" style=\"font-size:11px;color:'+pcaC.danger+';flex-shrink:0;cursor:pointer;padding:0 6px;\">✕</span>';\n                html += '</div>';\n                if (p.posWarn) {\n                    html += '<div style=\"font-size:10px;color:'+pcaC.gold+';padding:0 0 6px 4px;line-height:1.4;\">⚠ '+pcaEsc(p.posWarn)+'</div>';\n                }\n            });\n        }\n        html += '</div>';\n\n        // 底部按钮\n        html += '<div style=\"padding:8px 18px;border-top:1px solid '+pcaC.border+';display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0;\">';\n        if (pcaState.migrateUndoStack.length > 0) {\n            html += '<button data-pca-action=\"migrate-undo\" class=\"pca-btn pca-btn-danger\" style=\"padding:4px 10px;font-size:11px;\">↩ 撤销</button>';\n        }\n        if (pendingCount > 0) {\n            html += '<button data-pca-action=\"migrate-clear\" class=\"pca-btn\" style=\"padding:4px 10px;font-size:11px;\">清空</button>';\n            html += '<button data-pca-action=\"migrate-apply\" class=\"pca-btn-primary pca-glow\" style=\"padding:5px 16px;font-size:12px;\">应用并保存</button>';\n        }\n        html += '</div>';\n    }\n\n    dock.innerHTML = html;\n    root.appendChild(dock);\n}\n\nfunction pcaShowInsertPositionPicker(entry, callback) {\n    var doc = pcaGetDoc();\n    var rightEntries = pcaExtract(pcaState.rightPresetData);\n\n    pcaState.migratePending.forEach(function(p) {\n        if (p.action === 'new') {\n            var idx = p.insertIndex !== undefined ? p.insertIndex : rightEntries.length;\n            if (idx > rightEntries.length) idx = rightEntries.length;\n            rightEntries.splice(idx, 0, p.entry);\n        }\n    });\n\n    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');\n    var html = '<div class=\"pca-modal-overlay\" id=\"pca-insert-overlay\">';\n    html += '<div style=\"background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:min(600px,96vw);max-height:min(80vh,720px);max-height:min(80dvh,720px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);\">';\n\n    html += '<div style=\"padding:14px 20px;border-bottom:1px solid '+pcaC.border+';flex-shrink:0;\">';\n    html += '<div style=\"font-size:15px;font-weight:700;color:'+pcaC.migrate+';margin-bottom:6px;\">📍 选择插入位置</div>';\n    html += '<div style=\"font-size:12px;color:'+pcaC.dim+';word-break:break-word;\">将「<span style=\"color:'+pcaC.pink+';\">'+pcaEsc(entry.name)+'</span>」插入到「'+pcaEsc(pcaState.rightName)+'」</div>';\n    html += '<div style=\"font-size:11px;color:'+pcaC.dim+';margin-top:4px;\">点击 <span style=\"color:'+pcaC.migrate+';\">➕</span> 选择位置</div>';\n    html += '</div>';\n\n    html += '<div style=\"flex:1;overflow-y:auto;padding:10px 16px;\">';\n\n    html += '<div class=\"pca-insert-line\" data-pca-action=\"pick-pos\" data-pca-pos=\"0\" style=\"display:flex;align-items:center;gap:8px;padding:6px 12px;margin:4px 0;border:1px dashed '+pcaC.border+';border-radius:6px;\">';\n    html += '<span class=\"pca-insert-icon\" style=\"color:'+pcaC.dim+';font-size:14px;transition:all 0.15s;\">➕</span>';\n    html += '<span style=\"font-size:11px;color:'+pcaC.dim+';\">插入到最顶部</span>';\n    html += '</div>';\n\n    rightEntries.forEach(function(e, idx) {\n        html += '<div class=\"pca-entry-item\" style=\"display:flex;align-items:center;gap:8px;padding:6px 10px;background:'+pcaC.card+';border:1px solid '+pcaC.border+';border-radius:6px;margin:2px 0;\">';\n        html += '<span style=\"font-size:10px;color:'+pcaC.dim+';min-width:24px;text-align:right;flex-shrink:0;\">#'+(idx+1)+'</span>';\n        html += '<span style=\"color:'+(e.enabled?pcaC.pink:pcaC.off)+';font-size:10px;flex-shrink:0;\">'+(e.enabled?'●':'○')+'</span>';\n        html += '<span style=\"font-size:12px;color:'+pcaC.text+';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\">'+pcaEsc(e.name)+'</span>';\n        if (e.marker) html += '<span style=\"font-size:9px;color:'+pcaC.gold+';flex-shrink:0;\">📌</span>';\n        html += '</div>';\n\n        html += '<div class=\"pca-insert-line\" data-pca-action=\"pick-pos\" data-pca-pos=\"'+(idx+1)+'\" data-pca-after=\"'+pcaAttr(e.name)+'\" style=\"display:flex;align-items:center;gap:8px;padding:6px 12px;margin:4px 0;border:1px dashed '+pcaC.border+';border-radius:6px;\">';\n        html += '<span class=\"pca-insert-icon\" style=\"color:'+pcaC.dim+';font-size:14px;transition:all 0.15s;\">➕</span>';\n        html += '<span style=\"font-size:11px;color:'+pcaC.dim+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\">在「'+pcaEsc(e.name)+'」之后</span>';\n        html += '</div>';\n    });\n\n    html += '</div>';\n\n    html += '<div style=\"padding:12px 20px;border-top:1px solid '+pcaC.border+';text-align:right;flex-shrink:0;\">';\n    html += '<button data-pca-action=\"pick-cancel\" class=\"pca-modal-btn\">取消</button>';\n    html += '</div>';\n\n    html += '</div></div>';\n\n    var overlay = doc.createElement('div');\n    overlay.innerHTML = html;\n    var overlayEl = overlay.firstChild;\n    if (existingDialog) { existingDialog.appendChild(overlayEl); } else { doc.body.appendChild(overlayEl); }\n\n    overlayEl.addEventListener('click', function(e) {\n        e.stopPropagation();\n        var thisOverlay = doc.querySelector('#pca-insert-overlay');\n        var target = e.target;\n        while (target && target !== thisOverlay) {\n            if (target.getAttribute && target.getAttribute('data-pca-action')) break;\n            target = target.parentElement;\n        }\n        if (!target || target === thisOverlay) {\n            if (e.target === thisOverlay) { thisOverlay.remove(); callback(-1, ''); }\n            return;\n        }\n        var action = target.getAttribute('data-pca-action');\n        if (action === 'pick-pos') {\n            var pos = parseInt(target.getAttribute('data-pca-pos'), 10);\n            var afterName = target.getAttribute('data-pca-after') || '';\n            thisOverlay.remove();\n            callback(pos, afterName);\n        } else if (action === 'pick-cancel') {\n            thisOverlay.remove();\n            callback(-1, '');\n        }\n    });\n}\n\nfunction pcaShowConfirm(message, callback, options) {\n    options = options || {};\n    var yesText = options.yesText || '确认';\n    var noText = options.noText || '取消';\n    var yesColor = options.yesColor || pcaC.gold;\n    var yesColorDim = options.yesColorDim || pcaC.goldDim;\n    var doc = pcaGetDoc();\n    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');\n    var html = '<div class=\"pca-modal-overlay\" id=\"pca-confirm-overlay\">';\n    html += '<div style=\"background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:12px;padding:24px;width:min(420px,94vw);box-shadow:0 8px 32px rgba(0,0,0,0.6);\">';\n    html += '<div style=\"font-size:14px;color:'+pcaC.text+';margin-bottom:16px;line-height:1.5;\">'+message+'</div>';\n    html += '<div style=\"display:flex;justify-content:flex-end;gap:10px;\">';\n    html += '<button data-pca-action=\"confirm-no\" class=\"pca-modal-btn\">'+pcaEsc(noText)+'</button>';\n    html += '<button data-pca-action=\"confirm-yes\" class=\"pca-modal-btn-primary\">'+pcaEsc(yesText)+'</button>';\n    html += '</div></div></div>';\n\n    var overlay = doc.createElement('div');\n    overlay.innerHTML = html;\n    var overlayEl = overlay.firstChild;\n    if (existingDialog) { existingDialog.appendChild(overlayEl); } else { doc.body.appendChild(overlayEl); }\n\n    overlayEl.addEventListener('click', function(e) {\n        e.stopPropagation();\n        var thisOverlay = doc.querySelector('#pca-confirm-overlay');\n        var target = e.target;\n        while (target && target !== thisOverlay) {\n            if (target.getAttribute && target.getAttribute('data-pca-action')) break;\n            target = target.parentElement;\n        }\n        if (!target) return;\n        var action = target.getAttribute('data-pca-action');\n        if (action === 'confirm-yes') { thisOverlay.remove(); callback(true); }\n        else if (action === 'confirm-no') { thisOverlay.remove(); callback(false); }\n        else if (target === thisOverlay) { thisOverlay.remove(); callback(false); }\n    });\n}\n\n// ============ 编辑器（新增功能） ============\n\nfunction pcaCloseEditor(force) {\n    var doc = pcaGetDoc();\n    var ov = doc.querySelector('#pca-editor-overlay');\n    if (!ov) return;\n    var es = pcaState.editorState;\n    if (es && !force) {\n        // 同步当前textarea内容到草稿\n        var ta = doc.querySelector('#pca-ed-textarea');\n        if (ta && es.activeVersion) {\n            pcaState.editorDrafts[es.entryId] = pcaState.editorDrafts[es.entryId] || {};\n            pcaState.editorDrafts[es.entryId][es.activeVersion] = ta.value;\n        }\n        // 检查是否有未保存修改\n        var dirty = pcaEditorIsDirty();\n        if (dirty) {\n            pcaShowConfirm(\n                '⚠️ 编辑内容尚未提交，关闭后将丢失所有修改<br><br>确定丢弃修改并关闭吗？',\n                function(confirmed) { if (confirmed) { pcaState.editorState=null; ov.remove(); var __mr2=pcaGetDoc().querySelector('#pca-ed-linemirror'); if(__mr2)__mr2.remove(); } },\n                { yesText:'丢弃并关闭', noText:'继续编辑', yesColor:pcaC.danger, yesColorDim:'#a04050' }\n            );\n            return;\n        }\n    }\n    pcaState.editorState = null;\n    ov.remove();\n    var __mr = pcaGetDoc().querySelector('#pca-ed-linemirror');\n    if (__mr) __mr.remove();\n}\n\nfunction pcaEditorIsDirty() {\n    var es = pcaState.editorState;\n    if (!es) return false;\n    var drafts = pcaState.editorDrafts[es.entryId] || {};\n    if (drafts.left !== undefined && drafts.left !== es.originalLeft) return true;\n    if (drafts.right !== undefined && drafts.right !== (es.originalRight || '')) return true;\n    return false;\n}\n\n// ========== 字段编辑（二级面板）辅助 ==========\n// ST 预设条目的可识别字段及取值\nvar PCA_FIELD_ROLES = ['system', 'user', 'assistant'];\nvar PCA_FIELD_POSITIONS = [\n    { v: 0, label: 'Relative（相对位置）' },\n    { v: 1, label: 'In-chat（按深度注入）' }\n];\nvar PCA_FIELD_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet'];\nvar PCA_RESERVED_IDS = ['main', 'nsfw', 'jailbreak', 'enhanceDefinitions', 'worldInfoBefore', 'worldInfoAfter', 'charDescription', 'charPersonality', 'scenario', 'personaDescription', 'dialogueExamples', 'chatHistory'];\n\nfunction pcaIsReservedId(id) {\n    if (!id) return false;\n    return PCA_RESERVED_IDS.indexOf(id) >= 0;\n}\n\n// 从源预设找原始 prompt（保留所有字段）\nfunction pcaEditorPickRawFields(entry) {\n    var raw = null;\n    try {\n        var leftPreset = pcaState.leftPresetData;\n        if (!leftPreset || !Array.isArray(leftPreset.prompts)) return null;\n        var origId = entry._origId || null;\n        if (origId) {\n            for (var i = 0; i < leftPreset.prompts.length; i++) {\n                if (leftPreset.prompts[i] && leftPreset.prompts[i].identifier === origId) { raw = leftPreset.prompts[i]; break; }\n            }\n        }\n        if (!raw) {\n            for (var j = 0; j < leftPreset.prompts.length; j++) {\n                var pp = leftPreset.prompts[j];\n                if (pp && (pp.identifier === entry.id || pp.name === entry.name)) { raw = pp; break; }\n            }\n        }\n    } catch(_e) {}\n    return raw;\n}\n\n// 构造编辑器面板的字段默认值（合并：原始 raw → entry → existingOverrides）\nfunction pcaEditorBuildFieldDefaults(raw, entry, existing) {\n    raw = raw || {};\n    existing = existing || {};\n    function pick(key, fallback) {\n        if (existing && Object.prototype.hasOwnProperty.call(existing, key)) return existing[key];\n        if (raw && Object.prototype.hasOwnProperty.call(raw, key)) return raw[key];\n        return fallback;\n    }\n    return {\n        identifier: pick('identifier', entry.id || ''),\n        name: pick('name', entry.name || ''),\n        role: pick('role', entry.role || 'system'),\n        injection_position: pick('injection_position', 0),\n        injection_depth: pick('injection_depth', 4),\n        injection_order: pick('injection_order', 100),\n        injection_trigger: (function(){\n            var v = pick('injection_trigger', null);\n            if (v === null || v === undefined) return null;\n            if (Array.isArray(v)) return v.slice();\n            return null;\n        })(),\n        system_prompt: !!pick('system_prompt', false),\n        marker: !!pick('marker', !!entry.marker),\n        forbid_overrides: !!pick('forbid_overrides', false),\n    };\n}\n\nfunction pcaOpenEditor(entry, options) {\n    options = options || {};\n    var doc = pcaGetDoc();\n    if (doc.querySelector('#pca-editor-overlay')) return;\n\n    // 找右侧匹配（用于参考栏 + 版本切换）\n    var rightMatch = null;\n    pcaState.rightEntries.forEach(function(re) {\n        if (re.id === entry.id || re.name === entry.name) rightMatch = re;\n    });\n\n    // 队列已有项的覆盖：如果是从队列里再编辑，初始内容用队列里那份\n    var pendingItem = null;\n    pcaState.migratePending.forEach(function(p) { if (p.entry.id === entry.id) pendingItem = p; });\n\n    var leftContent = entry.content || '';\n    var rightContent = rightMatch ? (rightMatch.content || '') : '';\n    var hasRight = !!rightMatch;\n    var hasDiff = hasRight && (leftContent !== rightContent);\n\n    // 默认选中版本\n    var defaultVersion = 'left';\n    if (pendingItem && pendingItem._editedFrom) {\n        defaultVersion = pendingItem._editedFrom;\n    }\n\n    // 初始化草稿（如果是从队列再编辑，用队列里的内容覆盖对应版本草稿）\n    if (!pcaState.editorDrafts[entry.id]) pcaState.editorDrafts[entry.id] = {};\n    if (pendingItem) {\n        pcaState.editorDrafts[entry.id][defaultVersion] = pendingItem.entry.content || '';\n    }\n\n    // 从源预设取原始 prompt 字段（用于字段编辑面板初值），匹配优先 _origId（复制为新条目时） → identifier → name\n    var rawFields = pcaEditorPickRawFields(entry);\n    // 已有的字段覆写（来自 pending 或 entry._fieldOverrides）\n    var existingOverrides = (pendingItem && pendingItem.fieldOverrides) || entry._fieldOverrides || null;\n    var fieldOverrides = pcaEditorBuildFieldDefaults(rawFields, entry, existingOverrides);\n    pcaState.editorState = {\n        entryId: entry.id,\n        entryName: entry.name,\n        leftEntry: entry,\n        rightEntry: rightMatch,\n        hasRight: hasRight,\n        hasDiff: hasDiff,\n        activeVersion: defaultVersion,\n        originalLeft: leftContent,\n        originalRight: rightContent,\n        referenceVisible: hasRight,\n        fromPendingIdx: pendingItem ? pcaState.migratePending.indexOf(pendingItem) : -1,\n        // 字段编辑：当前生效值（用户改过的 + 源原始值）\n        fieldOverrides: fieldOverrides,\n        rawFields: rawFields,\n        fieldsView: false,\n        // 条目编辑模式：true 时保存进 editPending（自改 / 反向），false 时走 migrate 流程\n        isEditTarget: !!options.isEditTarget,\n    };\n\n    var ov = doc.createElement('div');\n    ov.id = 'pca-editor-overlay';\n    ov.className = 'pca-modal-overlay';\n    ov.innerHTML = pcaBuildEditorHTML();\n\n    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');\n    if (existingDialog) existingDialog.appendChild(ov); else doc.body.appendChild(ov);\n\n    pcaBindEditor();\n    pcaEditorRefreshPasteHint();\n    pcaEditorRefreshContent();\n}\n\nfunction pcaBuildFieldsPanelHTML() {\n    var es = pcaState.editorState;\n    var fo = es.fieldOverrides;\n    var idLocked = pcaIsReservedId(fo.identifier);\n    var pad = 'padding:6px 8px;background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;color:'+pcaC.text+';font-size:12px;font-family:inherit;outline:none;width:100%;box-sizing:border-box;';\n    var rowLabel = 'font-size:11px;color:'+pcaC.dim+';margin-bottom:4px;font-weight:600;';\n    var section = 'margin-bottom:14px;';\n    var hint = 'font-size:10px;color:'+pcaC.dim+';margin-top:3px;line-height:1.4;';\n    var h = '';\n    h += '<div id=\"pca-ed-fields-panel\" style=\"flex:1;min-height:0;overflow-y:auto;padding:14px 18px 8px;\">';\n    h += '<div style=\"font-size:11px;color:'+pcaC.gold+';margin-bottom:14px;line-height:1.5;background:rgba(212,168,83,0.08);border-left:3px solid '+pcaC.goldDim+';padding:8px 10px;border-radius:4px;\">⚙ 这里编辑的是「<b>迁移到目标预设时</b>」该条目的字段。修改不影响源预设。点「✓ 保存字段」生效，再回正文编辑。</div>';\n\n    // 基础区\n    h += '<div style=\"'+section+'\"><div style=\"'+rowLabel+'\">📛 名称（name）</div>';\n    h += '<input id=\"pca-fld-name\" type=\"text\" value=\"'+pcaAttr(fo.name||'')+'\" style=\"'+pad+'\" />';\n    h += '</div>';\n\n    h += '<div style=\"'+section+'\"><div style=\"'+rowLabel+'\">🆔 ID（identifier）</div>';\n    if (idLocked) {\n        h += '<input id=\"pca-fld-id\" type=\"text\" value=\"'+pcaAttr(fo.identifier||'')+'\" style=\"'+pad+'opacity:0.7;cursor:not-allowed;\" readonly />';\n        h += '<div style=\"'+hint+';color:'+pcaC.danger+';\">⚠ 「'+pcaEsc(fo.identifier)+'」是 ST 保留 ID，不能修改（修改后 ST 找不到主入口）</div>';\n    } else {\n        h += '<div style=\"display:flex;gap:6px;\">';\n        h += '<input id=\"pca-fld-id\" type=\"text\" value=\"'+pcaAttr(fo.identifier||'')+'\" style=\"'+pad+'flex:1;\" />';\n        h += '<button data-pca-action=\"ed-fields-newid\" class=\"pca-modal-btn\" style=\"padding:5px 12px;font-size:11px;flex-shrink:0;\" title=\"生成新 UUID\">🎲 新 ID</button>';\n        h += '</div>';\n        h += '<div style=\"'+hint+'\">改 ID 后等同新建一个条目；如目标预设已存在该 ID 的条目，会被本条覆盖</div>';\n    }\n    h += '</div>';\n\n    h += '<div style=\"'+section+'\"><div style=\"'+rowLabel+'\">🎭 角色（role）</div>';\n    h += '<select id=\"pca-fld-role\" style=\"'+pad+'\">';\n    PCA_FIELD_ROLES.forEach(function(r){\n        var sel = (fo.role === r) ? ' selected' : '';\n        h += '<option value=\"'+pcaAttr(r)+'\"'+sel+'>'+pcaEsc(r)+'</option>';\n    });\n    h += '</select>';\n    h += '</div>';\n\n    // 注入位置区\n    h += '<div style=\"'+section+'border-top:1px dashed '+pcaC.border+';padding-top:14px;\">';\n    h += '<div style=\"'+rowLabel+'\">📍 注入位置（injection_position）</div>';\n    h += '<select id=\"pca-fld-pos\" style=\"'+pad+'\">';\n    PCA_FIELD_POSITIONS.forEach(function(p){\n        var sel = (Number(fo.injection_position) === p.v) ? ' selected' : '';\n        h += '<option value=\"'+p.v+'\"'+sel+'>'+pcaEsc(p.label)+'</option>';\n    });\n    h += '</select>';\n    h += '<div style=\"'+hint+'\">Relative：跟随条目顺序；In-chat：按下方深度插入到聊天历史中</div>';\n    h += '</div>';\n\n    h += '<div style=\"'+section+'display:flex;gap:10px;\">';\n    h += '<div style=\"flex:1;\"><div style=\"'+rowLabel+'\">🌊 深度（depth）</div>';\n    h += '<input id=\"pca-fld-depth\" type=\"number\" min=\"0\" max=\"100\" value=\"'+(fo.injection_depth!=null?fo.injection_depth:4)+'\" style=\"'+pad+'\" />';\n    h += '<div style=\"'+hint+'\">In-chat 模式下生效</div></div>';\n    h += '<div style=\"flex:1;\"><div style=\"'+rowLabel+'\">🔢 顺序（order）</div>';\n    h += '<input id=\"pca-fld-order\" type=\"number\" min=\"0\" value=\"'+(fo.injection_order!=null?fo.injection_order:100)+'\" style=\"'+pad+'\" />';\n    h += '<div style=\"'+hint+'\">同位置时按 order 排序</div></div>';\n    h += '</div>';\n\n    // 触发器\n    h += '<div style=\"'+section+'border-top:1px dashed '+pcaC.border+';padding-top:14px;\">';\n    h += '<div style=\"'+rowLabel+'\">⚡ 触发器（injection_trigger）</div>';\n    var trigEnabled = Array.isArray(fo.injection_trigger);\n    h += '<label style=\"display:flex;align-items:center;gap:6px;font-size:12px;color:'+pcaC.text+';margin-bottom:8px;cursor:pointer;\">';\n    h += '<input type=\"checkbox\" id=\"pca-fld-trig-enable\"'+(trigEnabled?' checked':'')+' style=\"cursor:pointer;\" /> 启用触发器限制（不勾 = 任何时候都注入）';\n    h += '</label>';\n    h += '<div id=\"pca-fld-trig-list\" style=\"display:'+(trigEnabled?'flex':'none')+';flex-wrap:wrap;gap:6px;padding:8px;background:'+pcaC.card+';border-radius:6px;border:1px solid '+pcaC.border+';\">';\n    PCA_FIELD_TRIGGERS.forEach(function(t){\n        var checked = trigEnabled && fo.injection_trigger.indexOf(t) >= 0;\n        h += '<label style=\"display:flex;align-items:center;gap:4px;font-size:11px;color:'+pcaC.text+';cursor:pointer;padding:3px 8px;background:'+(checked?pcaC.migrateBg:pcaC.input)+';border:1px solid '+(checked?pcaC.migrateBorder:pcaC.border)+';border-radius:4px;\">';\n        h += '<input type=\"checkbox\" data-pca-trig=\"'+pcaAttr(t)+'\"'+(checked?' checked':'')+' style=\"cursor:pointer;\" /> '+pcaEsc(t);\n        h += '</label>';\n    });\n    h += '</div>';\n    h += '<div style=\"'+hint+'\">勾选后：仅在所选场景触发；如你的 ST 版本不支持此字段，保持不勾即可</div>';\n    h += '</div>';\n\n    // 布尔开关\n    h += '<div style=\"'+section+'border-top:1px dashed '+pcaC.border+';padding-top:14px;\">';\n    h += '<div style=\"display:flex;flex-direction:column;gap:8px;\">';\n    function bool(id, label, val, tip) {\n        var rh = '';\n        rh += '<label style=\"display:flex;align-items:center;gap:8px;font-size:12px;color:'+pcaC.text+';cursor:pointer;\">';\n        rh += '<input type=\"checkbox\" id=\"'+id+'\"'+(val?' checked':'')+' style=\"cursor:pointer;width:14px;height:14px;\" />';\n        rh += '<span>'+pcaEsc(label)+'</span>';\n        if (tip) rh += '<span style=\"font-size:10px;color:'+pcaC.dim+';\">'+pcaEsc(tip)+'</span>';\n        rh += '</label>';\n        return rh;\n    }\n    h += bool('pca-fld-syspr', '系统主入口（system_prompt）', fo.system_prompt, '保留 ID 通常为 true');\n    h += bool('pca-fld-marker', '标记条目（marker）', fo.marker, '占位符，无 content');\n    h += bool('pca-fld-forbid', '禁止覆盖（forbid_overrides）', fo.forbid_overrides, '');\n    h += '</div></div>';\n\n    h += '</div>'; // panel\n\n    // 底部按钮（独立 div，ID 化方便切显隐，全用 modal 类保证样式生效）\n    h += '<div id=\"pca-ed-fields-bottom\" style=\"padding:10px 18px;border-top:1px solid '+pcaC.border+';display:flex;gap:8px;justify-content:space-between;flex-shrink:0;flex-wrap:wrap;\">';\n    h += '<button data-pca-action=\"ed-fields-reset\" class=\"pca-modal-btn\" style=\"color:'+pcaC.danger+';border-color:rgba(224,96,112,0.3);\">↺ 重置为源预设值</button>';\n    h += '<div style=\"display:flex;gap:8px;\">';\n    h += '<button data-pca-action=\"ed-fields-cancel\" class=\"pca-modal-btn\">取消</button>';\n    h += '<button data-pca-action=\"ed-fields-save\" class=\"pca-modal-btn-primary\">✓ 保存字段</button>';\n    h += '</div>';\n    h += '</div>';\n\n    return h;\n}\n\nfunction pcaBuildEditorHTML() {\n    var es = pcaState.editorState;\n    var h = '';\n    h += '<div class=\"pca-ed-modal\" style=\"background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:780px;max-width:96vw;max-height:92vh;max-height:92dvh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);\">';\n\n    // 头部\n    h += '<div style=\"padding:12px 18px;border-bottom:1px solid '+pcaC.border+';display:flex;align-items:center;justify-content:space-between;flex-shrink:0;gap:10px;\">';\n    h += '<div style=\"flex:1;min-width:0;\">';\n    h += '<div style=\"font-size:14px;font-weight:700;color:'+pcaC.migrate+';margin-bottom:3px;\">✏️ 编辑后迁移</div>';\n    h += '<div style=\"font-size:12px;color:'+pcaC.text+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\">'+pcaEsc(es.entryName)+' <span style=\"font-size:10px;color:'+pcaC.dim+';\">('+pcaEsc(es.entryId)+')</span></div>';\n    h += '</div>';\n    h += '<div style=\"display:flex;align-items:center;gap:6px;flex-shrink:0;\">';\n    var fieldsActive = !!es.fieldsView;\n    h += '<span data-pca-action=\"ed-toggle-fields\" class=\"pca-ed-btn\" style=\"'+(fieldsActive?'color:'+pcaC.gold+';border-color:'+pcaC.goldDim+';':'')+'\" title=\"编辑此条目的字段（name/id/role/位置/触发器等）\">⚙ 字段</span>';\n    h += '<span data-pca-action=\"ed-close\" style=\"color:'+pcaC.dim+';font-size:20px;padding:4px 8px;cursor:pointer;\">✕</span>';\n    h += '</div>';\n    h += '</div>';\n\n    // 版本切换 tabs（仅当目标已有时显示）\n    if (es.hasRight) {\n        h += '<div id=\"pca-ed-tabs-bar\" style=\"padding:8px 18px 0;border-bottom:1px solid '+pcaC.border+';display:flex;gap:4px;align-items:flex-end;flex-shrink:0;flex-wrap:wrap;\">';\n        h += '<span data-pca-action=\"ed-switch-ver\" data-pca-ver=\"left\" class=\"pca-ed-tab'+(es.activeVersion==='left'?' active':'')+'\">📁 旧版（左）'+(es.hasDiff?' ⚡':'')+'</span>';\n        h += '<span data-pca-action=\"ed-switch-ver\" data-pca-ver=\"right\" class=\"pca-ed-tab'+(es.activeVersion==='right'?' active':'')+'\">📂 新版（右）'+(es.hasDiff?' ⚡':'')+'</span>';\n        h += '<span style=\"font-size:10px;color:'+pcaC.dim+';margin-left:auto;padding:0 4px 6px;\">'+(es.hasDiff?'⚡ 两版本内容有差异':'两版本内容相同')+'</span>';\n        h += '</div>';\n    }\n\n    // 工具栏\n    h += '<div id=\"pca-ed-toolbar\" style=\"padding:8px 18px;border-bottom:1px solid '+pcaC.border+';display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0;align-items:center;\">';\n    h += '<span data-pca-action=\"ed-tool\" data-pca-tool=\"selectall\" class=\"pca-ed-btn\">全选</span>';\n    h += '<span data-pca-action=\"ed-tool\" data-pca-tool=\"copy\" class=\"pca-ed-btn\">📋 复制</span>';\n    h += '<span id=\"pca-ed-paste-btn\" data-pca-action=\"ed-tool\" data-pca-tool=\"paste\" class=\"pca-ed-btn\" title=\"点击粘贴；优先系统剪贴板，否则使用脚本暗存内容\">📥 粘贴</span>';\n    h += '<span id=\"pca-ed-paste-hint\" style=\"font-size:10px;color:'+pcaC.dim+';align-self:center;display:none;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\"></span>';\n    h += '<span data-pca-action=\"ed-tool\" data-pca-tool=\"undo\" class=\"pca-ed-btn\">↶ 撤销</span>';\n    h += '<span data-pca-action=\"ed-tool\" data-pca-tool=\"redo\" class=\"pca-ed-btn\">↷ 重做</span>';\n    h += '<span data-pca-action=\"ed-tool\" data-pca-tool=\"reset\" class=\"pca-ed-btn\" style=\"color:'+pcaC.danger+';border-color:rgba(224,96,112,0.3);\">↺ 还原本版</span>';\n    var wrapOn = pcaState.editorWrap !== false;\n    var wrapLabel = wrapOn ? '🔁 自动换行' : '📐 不换行';\n    h += '<span data-pca-action=\"ed-toggle-wrap\" class=\"pca-ed-btn\" title=\"切换长行是否软换行；不影响实际行数\">'+wrapLabel+'</span>';\n    if (es.hasRight) {\n        var refLabel = es.referenceVisible ? '🙈 隐藏参考' : '👁 显示参考';\n        h += '<span data-pca-action=\"ed-toggle-ref\" class=\"pca-ed-btn\" style=\"margin-left:auto;color:'+pcaC.gold+';border-color:'+pcaC.goldDim+';\">'+refLabel+'</span>';\n    }\n    h += '</div>';\n\n    // 主体（编辑区 + 参考区，各占一半，可上下滚动）\n    h += '<div id=\"pca-ed-body\" style=\"flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;\">';\n\n    // 编辑区\n    h += '<div style=\"flex:'+(es.hasRight?'1':'1 1 100%')+';min-height:140px;padding:10px 18px;display:flex;flex-direction:column;overflow:hidden;\">';\n    h += '<div style=\"font-size:11px;color:'+pcaC.dim+';margin-bottom:4px;display:flex;justify-content:space-between;flex-shrink:0;\">';\n    h += '<span id=\"pca-ed-active-label\">正在编辑</span>';\n    h += '<span id=\"pca-ed-stats\" style=\"font-size:10px;\"></span>';\n    h += '</div>';\n    // textarea + 行号容器\n    h += '<div style=\"flex:1;min-height:120px;display:flex;background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;overflow:hidden;\">';\n    h += '<div id=\"pca-ed-linenums\" style=\"flex-shrink:0;background:'+pcaC.card+';color:'+pcaC.off+';font-family:Consolas,Menlo,monospace;font-size:14px;line-height:1.6;padding:10px 6px 24px 10px;text-align:right;user-select:none;overflow:hidden;min-width:36px;max-height:100%;border-right:1px solid '+pcaC.border+';white-space:pre;box-sizing:border-box;align-self:stretch;\"></div>';\n    var taWrapAttr = (pcaState.editorWrap !== false) ? 'soft' : 'off';\n    var taWhite = (pcaState.editorWrap !== false) ? 'pre-wrap' : 'pre';\n    var taOverflowX = (pcaState.editorWrap !== false) ? 'hidden' : 'auto';\n    var taWordBreak = (pcaState.editorWrap !== false) ? 'break-word' : 'normal';\n    h += '<textarea id=\"pca-ed-textarea\" wrap=\"'+taWrapAttr+'\" style=\"flex:1;min-width:0;border:none!important;border-radius:0!important;background:transparent!important;line-height:1.6!important;padding:10px 12px!important;font-size:14px!important;font-family:Consolas,Menlo,monospace!important;white-space:'+taWhite+'!important;overflow-x:'+taOverflowX+'!important;overflow-y:auto!important;word-break:'+taWordBreak+'!important;\"></textarea>';\n    h += '</div>';\n    h += '</div>';\n\n    // 参考区\n    if (es.hasRight) {\n        h += '<div id=\"pca-ed-ref-container\" style=\"flex:'+(es.referenceVisible?'1':'0 0 0')+';min-height:'+(es.referenceVisible?'120px':'0')+';border-top:1px solid '+pcaC.border+';display:'+(es.referenceVisible?'flex':'none')+';flex-direction:column;overflow:hidden;\">';\n        h += '<div style=\"padding:8px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;background:'+pcaC.card+';flex-wrap:wrap;gap:6px;\">';\n        h += '<span id=\"pca-ed-ref-label\" style=\"font-size:12px;font-weight:600;color:'+pcaC.gold+';\">📖 另一版本（参考）</span>';\n        h += '</div>';\n        h += '<div id=\"pca-ed-ref-content\" style=\"flex:1;overflow-y:auto;padding:6px 18px 10px;min-height:0;\"></div>';\n        h += '</div>';\n    }\n\n    h += '</div>';\n\n    // 底部按钮\n    h += '<div id=\"pca-ed-bottom-bar\" style=\"padding:10px 18px;border-top:1px solid '+pcaC.border+';display:flex;gap:8px;justify-content:flex-end;flex-shrink:0;flex-wrap:wrap;\">';\n    h += '<button data-pca-action=\"ed-cancel\" class=\"pca-modal-btn\">取消</button>';\n    h += '<button data-pca-action=\"ed-confirm\" class=\"pca-modal-btn-primary\">确认并加入队列</button>';\n    h += '</div>';\n\n    h += '</div>';\n    return h;\n}\n\nfunction pcaEditorGetCurrentDraft() {\n    var es = pcaState.editorState;\n    if (!es) return '';\n    var drafts = pcaState.editorDrafts[es.entryId] || {};\n    if (es.activeVersion === 'left') {\n        return drafts.left !== undefined ? drafts.left : es.originalLeft;\n    } else {\n        return drafts.right !== undefined ? drafts.right : es.originalRight;\n    }\n}\n\nfunction pcaEditorUpdateStats() {\n    var doc = pcaGetDoc();\n    var ta = doc.querySelector('#pca-ed-textarea');\n    var st = doc.querySelector('#pca-ed-stats');\n    var ln = doc.querySelector('#pca-ed-linenums');\n    if (!ta) return;\n    var v = ta.value || '';\n    var lineCount = 1;\n    for (var ci = 0; ci < v.length; ci++) { if (v.charCodeAt(ci) === 10) lineCount++; }\n    if (st) st.textContent = v.length + ' 字 / ' + lineCount + ' 行';\n    if (ln) {\n        var inner = ln.firstChild;\n        if (!inner || inner.id !== 'pca-ed-linenums-inner') {\n            ln.textContent = '';\n            inner = doc.createElement('div');\n            inner.id = 'pca-ed-linenums-inner';\n            inner.style.cssText = 'font:inherit;color:inherit;line-height:1.6;white-space:pre;padding:0;margin:0;';\n            ln.appendChild(inner);\n        }\n        var wrapOn = (pcaState.editorWrap !== false);\n        var nums = '';\n        if (!wrapOn) {\n            // 不换行模式：每个逻辑行 = 一个视觉行，行号 1:1\n            for (var i = 1; i <= lineCount; i++) { nums += i + (i < lineCount ? '\\n' : ''); }\n        } else {\n            // 软换行模式：用镜像 div 测每个逻辑行的视觉行数\n            var mirror = doc.querySelector('#pca-ed-linemirror');\n            if (!mirror) {\n                mirror = doc.createElement('div');\n                mirror.id = 'pca-ed-linemirror';\n                mirror.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;left:-99999px;top:0;';\n                doc.body.appendChild(mirror);\n            }\n            // 同步关键样式：宽度（textarea 内容宽度 = clientWidth - paddingLeft - paddingRight）、字体、行高、padding、wrap 等\n            var cs = ta.ownerDocument.defaultView.getComputedStyle(ta);\n            var contentW = ta.clientWidth - parseFloat(cs.paddingLeft||0) - parseFloat(cs.paddingRight||0);\n            if (contentW < 10) contentW = 10;\n            mirror.style.width = contentW + 'px';\n            mirror.style.fontFamily = cs.fontFamily;\n            mirror.style.fontSize = cs.fontSize;\n            mirror.style.fontWeight = cs.fontWeight;\n            mirror.style.lineHeight = cs.lineHeight;\n            mirror.style.letterSpacing = cs.letterSpacing;\n            mirror.style.tabSize = cs.tabSize || '4';\n            mirror.style.whiteSpace = 'pre-wrap';\n            mirror.style.wordBreak = cs.wordBreak || 'break-word';\n            mirror.style.overflowWrap = cs.overflowWrap || 'anywhere';\n            mirror.style.boxSizing = 'content-box';\n            mirror.style.padding = '0';\n            mirror.style.margin = '0';\n            mirror.style.border = '0';\n            // 计算单视觉行高度（拿一个空格量）\n            mirror.textContent = ' ';\n            var oneLineH = mirror.getBoundingClientRect().height || (parseFloat(cs.fontSize) * 1.6);\n            // 按 \\n 拆每个逻辑行，逐行测高度，转成视觉行数\n            var logicalLines = v.split('\\n');\n            var parts = [];\n            for (var li = 0; li < logicalLines.length; li++) {\n                var ltext = logicalLines[li];\n                if (ltext.length === 0) {\n                    parts.push(String(li + 1));\n                } else {\n                    // 用一个不会被 trim 的占位避免 width 为 0\n                    mirror.textContent = ltext + '\\u200B';\n                    var h = mirror.getBoundingClientRect().height;\n                    var visRows = Math.max(1, Math.round(h / oneLineH));\n                    var seg = String(li + 1);\n                    for (var k = 1; k < visRows; k++) seg += '\\n';\n                    parts.push(seg);\n                }\n            }\n            nums = parts.join('\\n');\n        }\n        inner.textContent = nums;\n        var maxDigits = String(lineCount).length;\n        if (maxDigits < 2) maxDigits = 2;\n        ln.style.minWidth = (maxDigits * 9 + 16) + 'px';\n        ln.scrollTop = ta.scrollTop;\n    }\n}\n\nfunction pcaEditorSyncLinenumScroll() {\n    var doc = pcaGetDoc();\n    var ta = doc.querySelector('#pca-ed-textarea');\n    var ln = doc.querySelector('#pca-ed-linenums');\n    if (ta && ln) ln.scrollTop = ta.scrollTop;\n}\n\nfunction pcaEditorRefreshContent() {\n    var doc = pcaGetDoc();\n    var es = pcaState.editorState;\n    if (!es) return;\n    var ta = doc.querySelector('#pca-ed-textarea');\n    var lbl = doc.querySelector('#pca-ed-active-label');\n    if (ta) {\n        ta.value = pcaEditorGetCurrentDraft();\n        pcaEditorUpdateStats();\n    }\n    if (lbl) {\n        if (es.activeVersion === 'left') lbl.innerHTML = '<span style=\"color:'+pcaC.text+';font-weight:600;\">正在编辑：</span><span style=\"color:'+pcaC.pink+';font-weight:600;\">📁 旧版（左）</span>';\n        else lbl.innerHTML = '<span style=\"color:'+pcaC.text+';font-weight:600;\">正在编辑：</span><span style=\"color:'+pcaC.gold+';font-weight:600;\">📂 新版（右）</span>';\n    }\n    pcaEditorRefreshReference();\n}\n\nfunction pcaEditorRefreshReference() {\n    var doc = pcaGetDoc();\n    var es = pcaState.editorState;\n    if (!es || !es.hasRight) return;\n    var refEl = doc.querySelector('#pca-ed-ref-content');\n    var refLbl = doc.querySelector('#pca-ed-ref-label');\n    if (!refEl) return;\n    var otherContent = es.activeVersion === 'left' ? es.originalRight : es.originalLeft;\n    if (refLbl) {\n        refLbl.innerHTML = es.activeVersion === 'left'\n            ? '<span style=\"color:'+pcaC.text+';\">📖 参考：</span><span style=\"color:'+pcaC.gold+';\">📂 新版（右）</span>'\n            : '<span style=\"color:'+pcaC.text+';\">📖 参考：</span><span style=\"color:'+pcaC.pink+';\">📁 旧版（左）</span>';\n    }\n    var html = '';\n    if (!otherContent) {\n        html = '<div style=\"padding:14px;color:'+pcaC.dim+';font-size:12px;text-align:center;\">（另一版本为空）</div>';\n    } else if (!es.hasDiff) {\n        // 内容相同：纯文本+行号，点击跳转到编辑框对应行\n        var lines = otherContent.split('\\n');\n        html += '<div style=\"background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:6px 0;font-size:12px;line-height:1.7;font-family:Consolas,monospace;\">';\n        lines.forEach(function(ln, idx) {\n            html += '<div data-pca-action=\"ed-jump-line\" data-pca-jumpline=\"'+(idx+1)+'\" style=\"padding:1px 10px;color:'+pcaC.dim+';white-space:pre-wrap;word-break:break-all;display:flex;gap:8px;cursor:pointer;\">';\n            html += '<span style=\"color:'+pcaC.off+';flex-shrink:0;min-width:32px;text-align:right;user-select:none;\">'+(idx+1)+'</span>';\n            html += '<span style=\"flex:1;min-width:0;\">'+pcaEsc(ln||' ')+'</span>';\n            html += '</div>';\n        });\n        html += '</div>';\n        html += '<div style=\"margin-top:6px;font-size:10px;color:'+pcaC.dim+';\">点击行可跳转到编辑器对应行</div>';\n    } else {\n        // 有差异：构建 diff，每行显示，并标记行号在编辑器中应该跳转的行\n        var aText = pcaEditorGetCurrentDraft();\n        var bText = otherContent;\n        var diff = pcaDiffLines(aText, bText);\n\n        // 计算每个 diff 项在 A（编辑器）中的\"目标跳转行\"\n        // - same 行：直接对应A中的行号\n        // - add 行（B独有）：跳到前面最近一个 same 行（即在A中的位置）的下一行\n        var aLineCounter = 0;  // A中行号（1-based）\n        var refLineNum = 0;\n        var entries = [];\n        diff.forEach(function(d) {\n            if (d.type === 'same') {\n                aLineCounter++;\n                entries.push({ d:d, jumpA:aLineCounter });\n            } else if (d.type === 'del') {\n                aLineCounter++;\n                // del 不显示在参考里\n            } else if (d.type === 'add') {\n                // add 行（B独有）：跳到\"它前面最近的 same 行\"在 A 中的位置；\n                // 若它出现在文件最开头（前面没有 same），则跳到第 1 行\n                entries.push({ d:d, jumpA: aLineCounter > 0 ? aLineCounter : 1 });\n            }\n        });\n\n        html += '<div style=\"background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:6px 0;font-size:12px;line-height:1.7;font-family:Consolas,monospace;\">';\n        entries.forEach(function(item) {\n            var d = item.d;\n            if (d.type === 'del') return;\n            refLineNum++;\n            var isAdd = d.type === 'add';\n            var bg = isAdd ? pcaC.diffAdd : 'transparent';\n            var color = isAdd ? pcaC.diffAddText : pcaC.dim;\n            var prefix = isAdd ? '+' : ' ';\n            var lineHtml = '<div class=\"pca-ed-ref-line\" data-pca-action=\"ed-jump-line\" data-pca-jumpline=\"'+item.jumpA+'\" data-pca-add=\"'+(isAdd?'1':'0')+'\" data-pca-text=\"'+pcaAttr(d.text)+'\" style=\"background:'+bg+';padding:1px 10px;color:'+color+';white-space:pre-wrap;word-break:break-all;display:flex;align-items:flex-start;gap:6px;cursor:pointer;\">';\n            lineHtml += '<span style=\"color:'+pcaC.off+';flex-shrink:0;min-width:32px;text-align:right;user-select:none;\">'+refLineNum+'</span>';\n            lineHtml += '<span style=\"display:inline-block;width:12px;opacity:0.6;user-select:none;flex-shrink:0;\">'+prefix+'</span>';\n            lineHtml += '<span style=\"flex:1;min-width:0;\">'+pcaEsc(d.text||' ')+'</span>';\n            if (isAdd) {\n                lineHtml += '<span data-pca-action=\"ed-append-line\" data-pca-text=\"'+pcaAttr(d.text)+'\" title=\"追加到编辑末尾\" style=\"cursor:pointer;flex-shrink:0;color:'+pcaC.migrate+';font-size:13px;padding:0 4px;\">➕</span>';\n                lineHtml += '<span data-pca-action=\"ed-copy-text\" data-pca-text=\"'+pcaAttr(d.text)+'\" title=\"复制此行\" style=\"cursor:pointer;flex-shrink:0;color:'+pcaC.gold+';font-size:13px;padding:0 4px;\">📋</span>';\n            }\n            lineHtml += '</div>';\n            html += lineHtml;\n        });\n        html += '</div>';\n        html += '<div style=\"margin-top:6px;font-size:10px;color:'+pcaC.dim+';\">点击行＝跳转到编辑器对应位置；<span style=\"color:'+pcaC.migrate+';\">➕</span>追加；<span style=\"color:'+pcaC.gold+';\">📋</span>复制</div>';\n    }\n    refEl.innerHTML = html;\n}\n\nfunction pcaBindEditor() {\n    var doc = pcaGetDoc();\n    var ov = doc.querySelector('#pca-editor-overlay');\n    if (!ov) return;\n\n    // 字段面板视图时只绑字段联动\n    if (pcaState.editorState && pcaState.editorState.fieldsView) {\n        pcaEditorBindFieldsPanel();\n        return;\n    }\n\n    var ta = doc.querySelector('#pca-ed-textarea');\n    if (ta) {\n        ta.addEventListener('input', function() {\n            var es = pcaState.editorState;\n            if (!es) return;\n            pcaState.editorDrafts[es.entryId] = pcaState.editorDrafts[es.entryId] || {};\n            pcaState.editorDrafts[es.entryId][es.activeVersion] = ta.value;\n            pcaEditorUpdateStats();\n            pcaEditorSyncLinenumScroll();\n        });\n        ta.addEventListener('scroll', function() {\n            pcaEditorSyncLinenumScroll();\n        });\n        // 记录最近一次 selection，工具栏点击后焦点会被夺走，但 selection 仍然保留在 ta 上；\n        // 这里多做一层保险，用于 \"复制\" 兜底\n        var saveSel = function() {\n            try {\n                ta._pcaLastSelStart = ta.selectionStart;\n                ta._pcaLastSelEnd = ta.selectionEnd;\n            } catch(_e) {}\n        };\n        ta.addEventListener('keyup', saveSel);\n        ta.addEventListener('mouseup', saveSel);\n        ta.addEventListener('select', saveSel);\n        ta.addEventListener('blur', saveSel);\n        // textarea 尺寸变化（窗口 resize / 横竖屏切换）时重算行号映射\n        try {\n            if (typeof ResizeObserver !== 'undefined') {\n                var ro = new ResizeObserver(function(){ pcaEditorUpdateStats(); });\n                ro.observe(ta);\n                ta._pcaResizeObserver = ro;\n            }\n        } catch(_e) {}\n    }\n\n    // 工具栏按钮 mousedown 时记录 textarea 当前 selection（此刻焦点仍在 textarea 上），\n    // 但不要 preventDefault —— 否则部分浏览器会吞掉随后的 click 事件\n    var toolBar = ov.querySelectorAll('[data-pca-action]');\n    for (var ti = 0; ti < toolBar.length; ti++) {\n        toolBar[ti].addEventListener('mousedown', function() {\n            try {\n                var taX = doc.querySelector('#pca-ed-textarea');\n                if (taX) {\n                    taX._pcaLastSelStart = taX.selectionStart;\n                    taX._pcaLastSelEnd = taX.selectionEnd;\n                }\n            } catch(_e) {}\n        });\n    }\n\n    ov.addEventListener('click', function(e) {\n        e.stopPropagation();\n        var target = e.target;\n        while (target && target !== ov) {\n            if (target.getAttribute && target.getAttribute('data-pca-action')) break;\n            target = target.parentElement;\n        }\n        if (!target || target === ov) return;\n        var action = target.getAttribute('data-pca-action');\n\n        switch(action) {\n            case 'ed-close':\n            case 'ed-cancel':\n                pcaCloseEditor(false);\n                break;\n            case 'ed-switch-ver':\n                var newVer = target.getAttribute('data-pca-ver');\n                var es1 = pcaState.editorState;\n                if (!es1 || es1.activeVersion === newVer) break;\n                var ta1 = doc.querySelector('#pca-ed-textarea');\n                if (ta1) {\n                    pcaState.editorDrafts[es1.entryId] = pcaState.editorDrafts[es1.entryId] || {};\n                    pcaState.editorDrafts[es1.entryId][es1.activeVersion] = ta1.value;\n                }\n                es1.activeVersion = newVer;\n                ov.querySelectorAll('.pca-ed-tab').forEach(function(t) {\n                    t.classList.toggle('active', t.getAttribute('data-pca-ver') === newVer);\n                });\n                pcaEditorRefreshContent();\n                break;\n            case 'ed-toggle-ref':\n                var es2 = pcaState.editorState;\n                if (!es2) break;\n                es2.referenceVisible = !es2.referenceVisible;\n                var refC = doc.querySelector('#pca-ed-ref-container');\n                if (refC) {\n                    refC.style.display = es2.referenceVisible ? 'flex' : 'none';\n                    refC.style.flex = es2.referenceVisible ? '1' : '0 0 0';\n                    refC.style.minHeight = es2.referenceVisible ? '120px' : '0';\n                }\n                target.textContent = es2.referenceVisible ? '🙈 隐藏参考' : '👁 显示参考';\n                if (es2.referenceVisible) pcaEditorRefreshReference();\n                break;\n            case 'ed-toggle-wrap':\n                pcaState.editorWrap = !(pcaState.editorWrap !== false);\n                try { localStorage.setItem(PCA_EDITOR_WRAP_KEY, pcaState.editorWrap ? '1' : '0'); } catch(e3) {}\n                var ta_w = doc.querySelector('#pca-ed-textarea');\n                if (ta_w) {\n                    var wrapNow = pcaState.editorWrap !== false;\n                    ta_w.setAttribute('wrap', wrapNow ? 'soft' : 'off');\n                    ta_w.style.setProperty('white-space', wrapNow ? 'pre-wrap' : 'pre', 'important');\n                    ta_w.style.setProperty('overflow-x', wrapNow ? 'hidden' : 'auto', 'important');\n                    ta_w.style.setProperty('word-break', wrapNow ? 'break-word' : 'normal', 'important');\n                }\n                target.textContent = (pcaState.editorWrap !== false) ? '🔁 自动换行' : '📐 不换行';\n                pcaEditorUpdateStats();\n                break;\n            case 'ed-toggle-fields':\n                pcaEditorToggleFieldsView();\n                break;\n            case 'ed-fields-newid':\n                var fldId = doc.querySelector('#pca-fld-id');\n                if (fldId && !fldId.readOnly) fldId.value = pcaGenEntryId();\n                break;\n            case 'ed-fields-reset':\n                pcaShowConfirm('重置为源预设原始字段值？当前未保存的字段修改会丢失。', function(ok){\n                    if (!ok) return;\n                    var es_r = pcaState.editorState; if (!es_r) return;\n                    es_r.fieldOverrides = pcaEditorBuildFieldDefaults(es_r.rawFields, es_r.leftEntry, null);\n                    pcaEditorRefreshFieldsPanelUI();\n                }, { yesText:'重置', noText:'取消', yesColor:pcaC.danger, yesColorDim:'#a04050' });\n                break;\n            case 'ed-fields-cancel':\n                pcaEditorToggleFieldsView();\n                break;\n            case 'ed-fields-save':\n                pcaEditorSaveFields();\n                break;\n            case 'ed-tool':\n                pcaEditorTool(target.getAttribute('data-pca-tool'));\n                break;\n            case 'ed-append-line':\n                e.stopPropagation();\n                var txt1 = target.getAttribute('data-pca-text') || '';\n                var dec1 = doc.createElement('div'); dec1.innerHTML = txt1;\n                pcaEditorAppendToTextarea(dec1.textContent);\n                break;\n            case 'ed-copy-text':\n                e.stopPropagation();\n                e.preventDefault();\n                var txt2 = target.getAttribute('data-pca-text') || '';\n                var lineText = '';\n                if (txt2) {\n                    var dec2 = doc.createElement('textarea'); dec2.innerHTML = txt2;\n                    lineText = dec2.value;\n                }\n                // 兜底：从父级 .pca-ed-ref-line 直接取最后一段 textContent（去掉行号、+ 号、按钮符号）\n                if (!lineText) {\n                    var parentLine = target.parentElement;\n                    while (parentLine && !parentLine.classList.contains('pca-ed-ref-line')) parentLine = parentLine.parentElement;\n                    if (parentLine) {\n                        var contentSpan = parentLine.querySelector('span[style*=\"flex:1\"]');\n                        if (contentSpan) lineText = contentSpan.textContent || '';\n                    }\n                }\n                pcaLog('[ed-copy-text] len=' + (lineText ? lineText.length : 0));\n                if (!lineText) { pcaShowToast('warning', '该行内容为空'); break; }\n                // 暗存为编辑器粘贴源，让粘贴按钮可联动\n                pcaState.editorClipText = lineText;\n                pcaState.editorClipFrom = 'ref-line';\n                pcaCopyToClipboard(lineText, '已复制此行（可点📥粘贴）');\n                pcaEditorRefreshPasteHint();\n                break;\n            case 'ed-jump-line':\n                var jumpLine = parseInt(target.getAttribute('data-pca-jumpline')||'1', 10);\n                pcaEditorJumpToLine(jumpLine);\n                break;\n            case 'ed-confirm':\n                pcaEditorConfirm();\n                break;\n        }\n    });\n}\n\n// 刷新\"粘贴按钮\"高亮 + 来源提示文案（暗存内容变化时调）\nfunction pcaEditorRefreshPasteHint() {\n    try {\n        var doc = pcaGetDoc();\n        var btn = doc.querySelector('#pca-ed-paste-btn');\n        var hint = doc.querySelector('#pca-ed-paste-hint');\n        if (!btn || !hint) return;\n        var stash = pcaState.editorClipText || '';\n        if (stash) {\n            btn.style.background = 'linear-gradient(135deg,'+pcaC.migrate+','+pcaC.migrateDim+')';\n            btn.style.color = '#fff';\n            btn.style.borderColor = pcaC.migrateBorder || pcaC.migrate;\n            btn.style.fontWeight = '600';\n            var src = pcaState.editorClipFrom === 'ref-line' ? '参考行' :\n                      (pcaState.editorClipFrom === 'editor-sel' ? '编辑选区' :\n                      (pcaState.editorClipFrom === 'editor-all' ? '编辑全文' : '暗存'));\n            hint.style.display = '';\n            hint.textContent = '✓ 已暗存「' + src + '」' + stash.length + '字';\n            hint.style.color = pcaC.migrate;\n        } else {\n            btn.style.background = '';\n            btn.style.color = '';\n            btn.style.borderColor = '';\n            btn.style.fontWeight = '';\n            hint.style.display = 'none';\n            hint.textContent = '';\n        }\n    } catch(_e) {}\n}\n\n// 切换到字段视图 / 切回正文视图（原地显隐，避免重建 textarea / 行号镜像 / 监听器）\nfunction pcaEditorToggleFieldsView() {\n    var es = pcaState.editorState;\n    if (!es) return;\n    es.fieldsView = !es.fieldsView;\n    var doc = pcaGetDoc();\n    var ov = doc.querySelector('#pca-editor-overlay');\n    if (!ov) return;\n    var bodyEl = ov.querySelector('#pca-ed-body');\n    var tabsEl = ov.querySelector('#pca-ed-tabs-bar');\n    var toolEl = ov.querySelector('#pca-ed-toolbar');\n    var bottomEl = ov.querySelector('#pca-ed-bottom-bar');\n    var fieldsEl = ov.querySelector('#pca-ed-fields-panel');\n    var fieldsBottomEl = ov.querySelector('#pca-ed-fields-bottom');\n    // 切到字段视图：首次进入懒构建\n    if (es.fieldsView) {\n        if (!fieldsEl) {\n            // 从源 prompt 重新装填默认值（保证显示最新数据）\n            es.fieldOverrides = pcaEditorBuildFieldDefaults(es.rawFields, es.leftEntry, es.fieldOverrides);\n            // 字段面板 HTML 包含 panel + bottom bar 两块；插到 modal 末尾\n            var modal = ov.querySelector('.pca-ed-modal');\n            if (modal) {\n                var tmp = doc.createElement('div');\n                tmp.innerHTML = pcaBuildFieldsPanelHTML();\n                while (tmp.firstChild) modal.appendChild(tmp.firstChild);\n                pcaEditorBindFieldsPanel();\n            }\n            fieldsEl = ov.querySelector('#pca-ed-fields-panel');\n            fieldsBottomEl = ov.querySelector('#pca-ed-fields-bottom');\n        } else {\n            // 二次进入：刷新 UI 表现的初值（对齐 fieldOverrides）\n            pcaEditorRefreshFieldsPanelUI();\n        }\n        if (bodyEl) bodyEl.style.display = 'none';\n        if (tabsEl) tabsEl.style.display = 'none';\n        if (toolEl) toolEl.style.display = 'none';\n        if (bottomEl) bottomEl.style.display = 'none';\n        if (fieldsEl) fieldsEl.style.display = '';\n        if (fieldsBottomEl) fieldsBottomEl.style.display = '';\n    } else {\n        if (bodyEl) bodyEl.style.display = '';\n        if (tabsEl) tabsEl.style.display = '';\n        if (toolEl) toolEl.style.display = '';\n        if (bottomEl) bottomEl.style.display = '';\n        if (fieldsEl) fieldsEl.style.display = 'none';\n        if (fieldsBottomEl) fieldsBottomEl.style.display = 'none';\n    }\n    // 高亮按钮状态\n    var btn = ov.querySelector('[data-pca-action=\"ed-toggle-fields\"]');\n    if (btn) {\n        if (es.fieldsView) { btn.style.color = pcaC.gold; btn.style.borderColor = pcaC.goldDim; }\n        else { btn.style.color = ''; btn.style.borderColor = ''; }\n    }\n}\n\n// 刷新字段面板表单的当前值（不重建 DOM）\nfunction pcaEditorRefreshFieldsPanelUI() {\n    var es = pcaState.editorState; if (!es) return;\n    var fo = es.fieldOverrides; if (!fo) return;\n    var doc = pcaGetDoc(); var ov = doc.querySelector('#pca-editor-overlay'); if (!ov) return;\n    function setVal(sel, v){ var el=ov.querySelector(sel); if(el && el.value!==undefined) el.value=v; }\n    function setCk(sel, v){ var el=ov.querySelector(sel); if(el && 'checked' in el) el.checked=!!v; }\n    setVal('#pca-fld-name', fo.name||'');\n    setVal('#pca-fld-id', fo.identifier||'');\n    setVal('#pca-fld-role', fo.role||'system');\n    setVal('#pca-fld-pos', String(fo.injection_position||0));\n    setVal('#pca-fld-depth', fo.injection_depth!=null?fo.injection_depth:4);\n    setVal('#pca-fld-order', fo.injection_order!=null?fo.injection_order:100);\n    var trigEnabled = Array.isArray(fo.injection_trigger);\n    setCk('#pca-fld-trig-enable', trigEnabled);\n    var list = ov.querySelector('#pca-fld-trig-list');\n    if (list) list.style.display = trigEnabled ? 'flex' : 'none';\n    ov.querySelectorAll('input[data-pca-trig]').forEach(function(cb){\n        cb.checked = trigEnabled && fo.injection_trigger.indexOf(cb.getAttribute('data-pca-trig')) >= 0;\n    });\n    setCk('#pca-fld-syspr', fo.system_prompt);\n    setCk('#pca-fld-marker', fo.marker);\n    setCk('#pca-fld-forbid', fo.forbid_overrides);\n}\n\n// 字段面板的\"启用触发器\"checkbox 联动 + 标签 checkbox 高亮联动\nfunction pcaEditorBindFieldsPanel() {\n    var doc = pcaGetDoc();\n    var ov = doc.querySelector('#pca-editor-overlay');\n    if (!ov) return;\n    var enable = ov.querySelector('#pca-fld-trig-enable');\n    var list = ov.querySelector('#pca-fld-trig-list');\n    if (enable && list) {\n        enable.addEventListener('change', function() {\n            list.style.display = enable.checked ? 'flex' : 'none';\n        });\n    }\n}\n\n// 读取 DOM 表单 → 写回 editorState.fieldOverrides → 切回正文视图\nfunction pcaEditorSaveFields() {\n    var es = pcaState.editorState;\n    if (!es) return;\n    var doc = pcaGetDoc();\n    var ov = doc.querySelector('#pca-editor-overlay');\n    if (!ov) return;\n    var fo = es.fieldOverrides;\n    var nameEl = ov.querySelector('#pca-fld-name');\n    var idEl = ov.querySelector('#pca-fld-id');\n    var roleEl = ov.querySelector('#pca-fld-role');\n    var posEl = ov.querySelector('#pca-fld-pos');\n    var depthEl = ov.querySelector('#pca-fld-depth');\n    var orderEl = ov.querySelector('#pca-fld-order');\n    var trigEnable = ov.querySelector('#pca-fld-trig-enable');\n    var sysEl = ov.querySelector('#pca-fld-syspr');\n    var markerEl = ov.querySelector('#pca-fld-marker');\n    var forbidEl = ov.querySelector('#pca-fld-forbid');\n\n    if (nameEl) {\n        var nv = (nameEl.value || '').trim();\n        if (!nv) { toastr.warning('名称不能为空'); return; }\n        fo.name = nv;\n    }\n    if (idEl && !idEl.readOnly) {\n        var iv = (idEl.value || '').trim();\n        if (!iv) { toastr.warning('ID 不能为空'); return; }\n        fo.identifier = iv;\n    }\n    if (roleEl) fo.role = roleEl.value;\n    if (posEl) fo.injection_position = parseInt(posEl.value, 10);\n    if (depthEl) {\n        var dv = parseInt(depthEl.value, 10);\n        if (isNaN(dv) || dv < 0) dv = 0;\n        fo.injection_depth = dv;\n    }\n    if (orderEl) {\n        var ov2 = parseInt(orderEl.value, 10);\n        if (isNaN(ov2)) ov2 = 100;\n        fo.injection_order = ov2;\n    }\n    if (trigEnable) {\n        if (trigEnable.checked) {\n            var arr = [];\n            ov.querySelectorAll('input[data-pca-trig]').forEach(function(cb){\n                if (cb.checked) arr.push(cb.getAttribute('data-pca-trig'));\n            });\n            fo.injection_trigger = arr;\n        } else {\n            fo.injection_trigger = null;\n        }\n    }\n    if (sysEl) fo.system_prompt = !!sysEl.checked;\n    if (markerEl) fo.marker = !!markerEl.checked;\n    if (forbidEl) fo.forbid_overrides = !!forbidEl.checked;\n\n    // 同步到 entry（本地编辑器视图）+ pending 项（如有）\n    es.leftEntry._fieldOverrides = JSON.parse(JSON.stringify(fo));\n    es.leftEntry.name = fo.name;\n    es.leftEntry.role = fo.role;\n    if (es.fromPendingIdx >= 0 && pcaState.migratePending[es.fromPendingIdx]) {\n        var p = pcaState.migratePending[es.fromPendingIdx];\n        p.fieldOverrides = JSON.parse(JSON.stringify(fo));\n        if (p.entry) {\n            p.entry._fieldOverrides = JSON.parse(JSON.stringify(fo));\n            p.entry.name = fo.name;\n            p.entry.role = fo.role;\n            // ID 改了 → 同步 entry.id（但保留 _origId 以便从源取字段）\n            if (idEl && !idEl.readOnly && p.entry.id !== fo.identifier) {\n                if (!p.entry._origId) p.entry._origId = p.entry.id;\n                p.entry.id = fo.identifier;\n            }\n        }\n    }\n    es.entryName = fo.name;\n    toastr.success('字段已保存');\n    // 同步标题文字（若 modal 头部显示了 entryName）\n    var titleEl = ov.querySelector('.pca-ed-modal > div:first-child div:nth-child(2)');\n    // 直接切回正文视图，使用原地显隐\n    es.fieldsView = true; // 让 toggle 把它切到 false\n    pcaEditorToggleFieldsView();\n}\n\nfunction pcaEditorTool(tool) {\n    var doc = pcaGetDoc();\n    var ta = doc.querySelector('#pca-ed-textarea');\n    if (!ta) return;\n    switch(tool) {\n        case 'selectall':\n            ta.focus();\n            ta.select();\n            break;\n        case 'copy':\n            try {\n                // 优先使用 mousedown 时记录的 selection（按钮 click 后焦点已转移）\n                var s0 = (typeof ta._pcaLastSelStart === 'number') ? ta._pcaLastSelStart : ta.selectionStart;\n                var e0 = (typeof ta._pcaLastSelEnd === 'number') ? ta._pcaLastSelEnd : ta.selectionEnd;\n                var hasSel = (s0 !== e0);\n                var textToCopy = hasSel ? ta.value.substring(s0, e0) : ta.value;\n                if (!textToCopy) { try { pcaShowToast('info', '无内容可复制'); } catch(_e2){} break; }\n                pcaState.editorClipText = textToCopy;\n                pcaState.editorClipFrom = hasSel ? 'editor-sel' : 'editor-all';\n                pcaCopyToClipboard(textToCopy, hasSel ? ('已复制选中文本（' + textToCopy.length + ' 字）') : ('已复制全部（' + textToCopy.length + ' 字）'));\n                pcaEditorRefreshPasteHint();\n                // 复制后把焦点和选区还原到 textarea，让用户继续看到\"自己的选区\"\n                setTimeout(function() {\n                    try {\n                        ta.focus({ preventScroll: true });\n                        ta.setSelectionRange(s0, e0);\n                        ta._pcaLastSelStart = s0;\n                        ta._pcaLastSelEnd = e0;\n                    } catch(_e4) {}\n                }, 0);\n            } catch(e) {\n                try { pcaShowToast('warning', '复制失败，请用 Ctrl+C'); } catch(_e3) {}\n            }\n            break;\n        case 'paste':\n            // 把光标先还原到记录的位置（手机用户尤其需要）\n            try {\n                var ps = (typeof ta._pcaLastSelStart === 'number') ? ta._pcaLastSelStart : ta.selectionStart;\n                var pe = (typeof ta._pcaLastSelEnd === 'number') ? ta._pcaLastSelEnd : ta.selectionEnd;\n                ta.focus({ preventScroll: true });\n                ta.setSelectionRange(ps, pe);\n            } catch(_ep) { ta.focus(); }\n            var winP = pcaGetWin();\n            var canReadClip = false;\n            try { canReadClip = !!(winP && winP.isSecureContext && winP.navigator && winP.navigator.clipboard && winP.navigator.clipboard.readText); } catch(_e) {}\n            var stash = pcaState.editorClipText || '';\n            var pasteFromStash = function(reason) {\n                if (stash) {\n                    pcaEditorInsertAtCursor(stash);\n                    pcaShowToast('success', '已粘贴脚本暗存内容（' + stash.length + ' 字）');\n                } else {\n                    pcaShowToast('info', reason || '剪贴板读取受限，请用 Ctrl+V 粘贴');\n                }\n            };\n            if (canReadClip) {\n                winP.navigator.clipboard.readText().then(function(text) {\n                    if (text && text.length) {\n                        pcaEditorInsertAtCursor(text);\n                        pcaShowToast('success', '已粘贴系统剪贴板（' + text.length + ' 字）');\n                    } else {\n                        pasteFromStash('剪贴板为空');\n                    }\n                }).catch(function() {\n                    pasteFromStash('剪贴板被拒，已用脚本暗存');\n                });\n            } else {\n                pasteFromStash('HTTP 环境无法读剪贴板，已用脚本暗存');\n            }\n            break;\n        case 'undo':\n            ta.focus();\n            try { doc.execCommand('undo'); } catch(e) {}\n            break;\n        case 'redo':\n            ta.focus();\n            try { doc.execCommand('redo'); } catch(e) {}\n            break;\n        case 'reset':\n            var es = pcaState.editorState;\n            if (!es) return;\n            pcaShowConfirm('还原当前版本到原始内容？<br><br>当前在编辑器内的修改将丢失。', function(ok) {\n                if (!ok) return;\n                pcaState.editorDrafts[es.entryId] = pcaState.editorDrafts[es.entryId] || {};\n                if (es.activeVersion === 'left') pcaState.editorDrafts[es.entryId].left = es.originalLeft;\n                else pcaState.editorDrafts[es.entryId].right = es.originalRight;\n                pcaEditorRefreshContent();\n                toastr.info('已还原');\n            }, { yesText:'还原', noText:'取消', yesColor:pcaC.danger, yesColorDim:'#a04050' });\n            break;\n    }\n}\n\n// 置信度说明气泡（点 × 或点空白处关闭）\nfunction pcaShowConfHelpPopover(anchorEl) {\n    var doc = pcaGetDoc();\n    var existing = doc.querySelector('#pca-conf-help-popover');\n    if (existing) { existing.remove(); return; }\n\n    var rect = anchorEl.getBoundingClientRect();\n    var pop = doc.createElement('div');\n    pop.id = 'pca-conf-help-popover';\n    pop.style.cssText = 'position:fixed;z-index:2147483647;background:'+pcaC.bg+';border:1px solid '+pcaC.goldDim+';border-radius:10px;padding:14px 18px;box-shadow:0 8px 32px rgba(0,0,0,0.6);width:min(340px,92vw);font-size:12px;color:'+pcaC.text+';line-height:1.7;pointer-events:auto;';\n\n    var html = '';\n    html += '<div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;\">';\n    html += '<span style=\"font-size:13px;font-weight:700;color:'+pcaC.gold+';\">📍 智能定位置信度说明</span>';\n    html += '<span data-pca-action=\"conf-help-close\" style=\"cursor:pointer;color:'+pcaC.dim+';font-size:16px;padding:0 4px;\">×</span>';\n    html += '</div>';\n    html += '<div style=\"color:'+pcaC.dim+';margin-bottom:6px;\">迁移条目时，脚本会根据\"旧版前后邻居\"在新版中的位置自动算出插入点：</div>';\n    html += '<div style=\"margin-bottom:4px;\"><span style=\"color:'+pcaC.success+';font-weight:600;\">🟢 高</span> &nbsp;前后邻居都在新版且顺序一致，定位非常可信。</div>';\n    html += '<div style=\"margin-bottom:4px;\"><span style=\"color:'+pcaC.gold+';font-weight:600;\">🟡 中</span> &nbsp;只有单边邻居，或前后邻居在新版中顺序与旧版冲突。建议复核。</div>';\n    html += '<div style=\"margin-bottom:8px;\"><span style=\"color:'+pcaC.danger+';font-weight:600;\">🔴 低</span> &nbsp;旧新版无任何共有邻居，已回落到顶部 / 末尾，<b>强烈建议手工 📍 调位置</b>。</div>';\n    html += '<div style=\"border-top:1px solid '+pcaC.border+';padding-top:8px;color:'+pcaC.dim+';font-size:11px;\">点击队列项左侧的 📍 可手动选位置；点击行尾的 ✏️ 可编辑该条目内容；× 可移出队列。</div>';\n    pop.innerHTML = html;\n\n    // 关键修复：SillyTavern 的 popup 是 <dialog> 元素，使用浏览器 top-layer 渲染，\n    // 任何普通 body 子元素都会被它遮挡。必须把气泡也挂到 dialog 内部才能在它上面显示。\n    var hostDialog = doc.querySelector('dialog.popup[open]:has(#pca-root)')\n        || doc.querySelector('dialog.popup:has(#pca-root)')\n        || doc.querySelector('#pca-root');\n    var host = hostDialog || doc.body;\n    host.appendChild(pop);\n\n    // 测量后定位（让气泡在按钮上方显示，超出视口则改下方）\n    var ph = pop.offsetHeight, pw = pop.offsetWidth;\n    var top = rect.top - ph - 10;\n    if (top < 8) top = rect.bottom + 10;\n    var left = rect.left + rect.width / 2 - pw / 2;\n    if (left < 8) left = 8;\n    var maxLeft = (doc.documentElement.clientWidth || window.innerWidth) - pw - 8;\n    if (left > maxLeft) left = maxLeft;\n    pop.style.top = top + 'px';\n    pop.style.left = left + 'px';\n\n    // 点击空白处关闭\n    var closeHandler = function(e) {\n        if (!pop.contains(e.target)) {\n            pop.remove();\n            doc.removeEventListener('click', closeHandler, true);\n        }\n    };\n    setTimeout(function() { doc.addEventListener('click', closeHandler, true); }, 0);\n\n    // × 按钮\n    pop.addEventListener('click', function(e) {\n        var t = e.target;\n        if (t && t.getAttribute && t.getAttribute('data-pca-action') === 'conf-help-close') {\n            e.stopPropagation();\n            pop.remove();\n            doc.removeEventListener('click', closeHandler, true);\n        }\n    });\n}\n\nfunction pcaShowToast(type, msg) {\n    // 优先用顶层 window 的 toastr（因为脚本可能跑在 iframe 里，本地 window 可能没 toastr）\n    try {\n        var win = pcaGetWin();\n        var t = (win && win.toastr) ? win.toastr : ((typeof toastr !== 'undefined') ? toastr : null);\n        if (t && typeof t[type] === 'function') {\n            t[type](msg, '', { timeOut: 1500 });\n            return;\n        }\n    } catch(_e) {}\n    // 兜底：自己造一个浮动提示（贴到顶层 document）\n    try {\n        var doc = pcaGetDoc();\n        var box = doc.createElement('div');\n        var color = type === 'success' ? '#6ecf8a' : (type === 'warning' ? '#e0a070' : (type === 'error' ? '#e06070' : '#8eb8e5'));\n        box.textContent = msg;\n        box.style.cssText = 'position:fixed!important;left:50%!important;top:14%!important;transform:translateX(-50%)!important;background:rgba(20,18,28,0.95)!important;color:#fff!important;border:1px solid '+color+'!important;border-radius:8px!important;padding:8px 18px!important;font-size:13px!important;z-index:2147483647!important;box-shadow:0 4px 16px rgba(0,0,0,0.4)!important;pointer-events:none!important;';\n        doc.body.appendChild(box);\n        setTimeout(function(){ try { box.remove(); } catch(_e){} }, 1500);\n    } catch(_e2) {}\n}\n\nfunction pcaCopyToClipboard(text, successMsg) {\n    var doc = pcaGetDoc();\n    var win = pcaGetWin();\n    var ov = doc.querySelector('#pca-editor-overlay');\n    var container = ov || doc.body;\n    var safeText = (text == null) ? '' : String(text);\n\n    // 方法1：navigator.clipboard（HTTPS或localhost才行）\n    var canUseModern = false;\n    try {\n        canUseModern = !!(win && win.isSecureContext && win.navigator && win.navigator.clipboard && win.navigator.clipboard.writeText);\n    } catch(_e) { canUseModern = false; }\n    if (canUseModern) {\n        try {\n            win.navigator.clipboard.writeText(safeText).then(function() {\n                pcaShowToast('success', successMsg || '已复制');\n            }).catch(function(err) {\n                pcaLog('[clip] navigator.clipboard 失败: ' + (err && err.message) + '，回退');\n                pcaCopyFallback(safeText, successMsg, container, doc);\n            });\n            return;\n        } catch(_e) { pcaLog('[clip] navigator.clipboard 异常: ' + _e.message); }\n    }\n    pcaCopyFallback(safeText, successMsg, container, doc);\n}\n\nfunction pcaCopyFallback(text, successMsg, container, doc) {\n    var safeText = (text == null) ? '' : String(text);\n\n    // 方法 A：copy 事件 + clipboardData.setData —— 不依赖元素 focus，dialog 内成功率最高\n    var okA = false;\n    var handlerCalled = false;\n    try {\n        var handler = function(ev) {\n            handlerCalled = true;\n            try {\n                if (ev.clipboardData) {\n                    ev.clipboardData.setData('text/plain', safeText);\n                    ev.preventDefault();\n                    okA = true;\n                }\n            } catch(_e) {}\n        };\n        doc.addEventListener('copy', handler, true);\n        try { doc.execCommand('copy'); } catch(_eX) {}\n        doc.removeEventListener('copy', handler, true);\n        if (!(handlerCalled && okA)) okA = false;\n    } catch(_e) { okA = false; }\n\n    if (okA) {\n        pcaShowToast('success', successMsg || '已复制');\n        return;\n    }\n\n    // 方法 B：临时 textarea + execCommand('copy')（兜底）\n    var origTa = doc.querySelector('#pca-ed-textarea');\n    var origSelStart = -1, origSelEnd = -1;\n    if (origTa) {\n        try { origSelStart = origTa.selectionStart; origSelEnd = origTa.selectionEnd; } catch(_e) {}\n    }\n\n    var tryCopy = function(parent) {\n        var tmp = doc.createElement('textarea');\n        tmp.value = safeText;\n        tmp.setAttribute('readonly', '');\n        tmp.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;padding:0;border:0;margin:0;opacity:0.01;z-index:2147483647;';\n        parent.appendChild(tmp);\n        var ok2 = false;\n        try {\n            tmp.focus({ preventScroll: true });\n            tmp.select();\n            tmp.setSelectionRange(0, tmp.value.length);\n            ok2 = doc.execCommand && doc.execCommand('copy');\n        } catch(_e) { ok2 = false; }\n        try { tmp.remove(); } catch(_e2) {}\n        return !!ok2;\n    };\n\n    var ok = tryCopy(container || doc.body);\n    if (!ok && container && container !== doc.body) {\n        ok = tryCopy(doc.body);\n    }\n\n    // 恢复原编辑 textarea 的焦点与选区\n    if (origTa && origSelStart >= 0) {\n        try {\n            origTa.focus({ preventScroll: true });\n            origTa.setSelectionRange(origSelStart, origSelEnd);\n        } catch(_e3) {}\n    }\n\n    if (ok) {\n        pcaShowToast('success', successMsg || '已复制');\n    } else {\n        pcaShowToast('warning', '自动复制失败，请用 Ctrl+C 手动复制');\n    }\n}\n\nfunction pcaEditorInsertAtCursor(text) {\n    var doc = pcaGetDoc();\n    var ta = doc.querySelector('#pca-ed-textarea');\n    if (!ta) return;\n    var s = ta.selectionStart, e = ta.selectionEnd;\n    ta.value = ta.value.substring(0, s) + text + ta.value.substring(e);\n    ta.selectionStart = ta.selectionEnd = s + text.length;\n    ta.dispatchEvent(new Event('input', { bubbles: true }));\n}\n\nfunction pcaEditorAppendToTextarea(text) {\n    var doc = pcaGetDoc();\n    var ta = doc.querySelector('#pca-ed-textarea');\n    if (!ta) return;\n    var sep = (ta.value && !ta.value.endsWith('\\n')) ? '\\n' : '';\n    ta.value = ta.value + sep + text;\n    ta.dispatchEvent(new Event('input', { bubbles: true }));\n    ta.focus();\n    ta.selectionStart = ta.selectionEnd = ta.value.length;\n    toastr.success('已追加 1 行', '', { timeOut: 1500 });\n}\n\nfunction pcaEditorJumpToLine(lineNum) {\n    var doc = pcaGetDoc();\n    var ta = doc.querySelector('#pca-ed-textarea');\n    if (!ta) return;\n    var lines = ta.value.split('\\n');\n    if (lineNum < 1) lineNum = 1;\n    if (lineNum > lines.length) lineNum = lines.length;\n\n    // 计算光标位置（行首）\n    var pos = 0;\n    for (var i = 0; i < lineNum - 1; i++) {\n        pos += lines[i].length + 1; // +1 是 \\n\n    }\n    var lineEnd = pos + (lines[lineNum-1] || '').length;\n\n    ta.focus();\n    ta.setSelectionRange(pos, lineEnd);\n\n    // 滚动到目标行：估算 line-height * 行号\n    var lineHeight = 14 * 1.6; // font-size 14, line-height 1.6\n    var targetScroll = (lineNum - 1) * lineHeight - ta.clientHeight / 3;\n    ta.scrollTop = Math.max(0, targetScroll);\n\n    // 同步行号滚动\n    var ln = doc.querySelector('#pca-ed-linenums');\n    if (ln) ln.scrollTop = ta.scrollTop;\n\n    toastr.info('已跳转到第 ' + lineNum + ' 行', '', {timeOut:1000});\n}\n\nfunction pcaEditorConfirm() {\n    var doc = pcaGetDoc();\n    var es = pcaState.editorState;\n    if (!es) return;\n    var ta = doc.querySelector('#pca-ed-textarea');\n    if (!ta) return;\n\n    // 同步最新草稿\n    pcaState.editorDrafts[es.entryId] = pcaState.editorDrafts[es.entryId] || {};\n    pcaState.editorDrafts[es.entryId][es.activeVersion] = ta.value;\n\n    var finalContent = ta.value;\n    var sourceEntry = JSON.parse(JSON.stringify(es.leftEntry));\n    sourceEntry.content = finalContent;\n\n    // 判断 edited 标志（相对于 left 原内容是否变化）\n    var edited = (finalContent !== es.originalLeft);\n\n    // 条目编辑模式：保存到 editPending（覆盖／新建），不走 migrate 流程\n    if (es.isEditTarget) {\n        var fo_e = es.fieldOverrides || null;\n        if (es.leftEntry._isNew) {\n            // 这是「新建空白条目」流程\n            pcaEditAddPending({\n                action:'new',\n                targetId: sourceEntry.id,\n                entryId: sourceEntry.id,\n                entryName: (fo_e && fo_e.name) || sourceEntry.name,\n                entry: sourceEntry,\n                fieldOverrides: fo_e,\n                insertIndex: pcaGetEditTargetEntries().length,\n            });\n        } else {\n            pcaEditAddPending({\n                action:'overwrite',\n                targetId: sourceEntry.id,\n                entryId: sourceEntry.id,\n                entryName: (fo_e && fo_e.name) || sourceEntry.name,\n                entry: sourceEntry,\n                fieldOverrides: fo_e,\n            });\n        }\n        pcaCloseEditor(true);\n        pcaRenderEdit();\n        toastr.success('已加入待修改队列：' + ((fo_e && fo_e.name) || sourceEntry.name));\n        return;\n    }\n\n    var pendingItem = es.fromPendingIdx >= 0 ? pcaState.migratePending[es.fromPendingIdx] : null;\n\n    if (pendingItem) {\n        // 更新已有队列项\n        pcaState.migrateUndoStack.push({\n            action: 'edit',\n            index: es.fromPendingIdx,\n            prevItem: JSON.parse(JSON.stringify(pendingItem))\n        });\n        pendingItem.entry.content = finalContent;\n        pendingItem._edited = edited;\n        pendingItem._editedFrom = es.activeVersion;\n        pcaCloseEditor(true);\n        pcaRenderMigrate();\n        toastr.success('已更新队列项：' + es.entryName);\n        return;\n    }\n\n    // 新加入队列\n    if (es.hasRight) {\n        // 目标已有：覆盖\n        pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });\n        pcaState.migratePending.push({\n            action: 'overwrite',\n            entry: sourceEntry,\n            targetId: es.rightEntry.id,\n            _edited: edited,\n            _editedFrom: es.activeVersion,\n        });\n        pcaCloseEditor(true);\n        pcaRenderMigrate();\n        toastr.success('已加入队列（覆盖·已编辑）：' + es.entryName);\n    } else {\n        // 目标未有：要选位置\n        pcaShowInsertPositionPicker(sourceEntry, function(pos, afterName) {\n            if (pos < 0) return;\n            pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });\n            pcaState.migratePending.push({\n                action: 'new',\n                entry: sourceEntry,\n                insertIndex: pos,\n                insertAfterName: afterName,\n                _edited: edited,\n                _editedFrom: es.activeVersion,\n            });\n            pcaCloseEditor(true);\n            pcaRenderMigrate();\n            toastr.success('已加入队列（新建·已编辑）：' + es.entryName);\n        });\n    }\n}\n\n// ============ 编辑器 END ============\n\nfunction pcaAddNote() {\n    var doc = pcaGetDoc();\n    var input = doc.querySelector('#pca-note-input');\n    if (!input) return;\n    var val = input.value.trim();\n    if (!val) return;\n    var gid = pcaState.activeFavGroupId || '';\n    var groupName = '未分组';\n    var existingArr;\n    if (gid) {\n        pcaLoadFavGroups();\n        var g = pcaState.migrateFavGroups[gid];\n        if (!g) { toastr.error('分组已不存在'); pcaState.activeFavGroupId = ''; pcaRenderMigrate(); return; }\n        groupName = g.name;\n        existingArr = g.notes || [];\n    } else {\n        existingArr = pcaState.migrateNotes || [];\n    }\n    var exists = false;\n    existingArr.forEach(function(n) { if (n === val) exists = true; });\n    if (exists) { toastr.warning('「'+groupName+'」中已存在'); return; }\n    pcaAddToFavGroup([val], gid);\n    input.value = '';\n    pcaRenderMigrate();\n    toastr.success('已收藏到「'+groupName+'」：' + val);\n}\n\nfunction pcaRefreshDebug() { var el=pcaQ('#pca-debug-log'); if(el){el.textContent=pcaLogs.join('\\n');el.scrollTop=el.scrollHeight;} }\n\nasync function pcaDoCompare() {\n    var doc=pcaGetDoc();\n    var leftSel=doc.querySelector('#pca-sel-left'),rightSel=doc.querySelector('#pca-sel-right');\n    if(!leftSel||!rightSel)return;\n    var ln=leftSel.value,rn=rightSel.value;\n    if(!ln||!rn){toastr.warning('请先选择左右两个预设');return;}\n    if(ln===rn){toastr.warning('不能选同一个预设');return;}\n    pcaLog('对比: \"'+ln+'\" vs \"'+rn+'\"');\n    var content=doc.querySelector('#pca-content');\n    if(content)content.innerHTML='<div style=\"text-align:center;padding:30px;color:'+pcaC.dim+';\">⏳ 获取中…</div>';\n    var all=await pcaFetchAllPresets(); pcaRefreshDebug();\n    if(!all){if(content)content.innerHTML='<div style=\"text-align:center;padding:30px;color:'+pcaC.danger+';\">❌ 获取失败</div>';return;}\n    pcaState.allPresets=all;\n    var leftData=pcaFindPreset(all,ln),rightData=pcaFindPreset(all,rn); pcaRefreshDebug();\n    if(!leftData){if(content)content.innerHTML='<div style=\"text-align:center;padding:30px;color:'+pcaC.danger+';\">❌ 找不到左侧「'+pcaEsc(ln)+'」</div>';return;}\n    if(!rightData){if(content)content.innerHTML='<div style=\"text-align:center;padding:30px;color:'+pcaC.danger+';\">❌ 找不到右侧「'+pcaEsc(rn)+'」</div>';return;}\n\n    var le=pcaExtract(leftData),re=pcaExtract(rightData);\n    var result=pcaCompare(le,re);\n\n    pcaState.leftName=ln;pcaState.rightName=rn;\n    pcaState.leftEntries=le;pcaState.rightEntries=re;\n    pcaState.diffs=result.diffs;pcaState.newItems=result.newItems;\n    pcaState.rightPresetData=rightData;\n    pcaState.leftPresetData=leftData;\n    pcaState.originalValues={};pcaState.compared=true;\n    pcaState.migratePending=[];pcaState.migrateUndoStack=[];\n    pcaState.migrateSearch='';pcaState.migrateSelected={};\n    pcaState.migrateFavActive=false;\n    pcaState.activeFavGroupId='';\n    pcaState.migrateFilterStatus='all';\n    pcaState.migrateFilterDiff='all';\n    pcaState.migrateQueueExpanded=false;\n    pcaState.editorDrafts={};\n    pcaState.editorState=null;\n\n    var tabs=doc.querySelector('#pca-tabs'),footer=doc.querySelector('#pca-footer');\n    if(tabs)tabs.style.display='flex';if(footer)footer.style.display='flex';\n    doc.querySelector('#pca-tab-diff').textContent='开关差异 ('+result.diffs.length+')';\n    pcaSwitchTab('diff');pcaRefreshDebug();\n    toastr.success('对比完成：'+result.diffs.length+' 差异，'+result.newItems.length+' 新增');\n}\n\nfunction pcaSwitchTab(tab) {\n    pcaState.activeTab=tab;var doc=pcaGetDoc();\n    var td=doc.querySelector('#pca-tab-diff'),tm=doc.querySelector('#pca-tab-migrate'),te=doc.querySelector('#pca-tab-edit');\n    if(td){td.style.borderBottomColor=tab==='diff'?pcaC.pink:'transparent';td.style.color=tab==='diff'?pcaC.pink:pcaC.dim;}\n    if(tm){tm.style.borderBottomColor=tab==='migrate'?pcaC.migrate:'transparent';tm.style.color=tab==='migrate'?pcaC.migrate:pcaC.dim;}\n    if(te){te.style.borderBottomColor=tab==='edit'?pcaC.gold:'transparent';te.style.color=tab==='edit'?pcaC.gold:pcaC.dim;}\n    var footer = doc.querySelector('#pca-footer');\n    if (footer) footer.style.display = (tab === 'migrate' || tab === 'edit') ? 'none' : 'flex';\n    var existingDock = doc.querySelector('#pca-queue-dock');\n    if (existingDock && tab !== 'migrate') existingDock.remove();\n    var existingEditDock = doc.querySelector('#pca-edit-dock');\n    if (existingEditDock && tab !== 'edit') existingEditDock.remove();\n    if(tab==='diff')pcaRenderDiffs();else if(tab==='migrate')pcaRenderMigrate();else if(tab==='edit')pcaRenderEdit();\n}\n\nasync function pcaDoSave() {\n    if(!pcaState.compared){toastr.warning('请先对比');return;}\n    var name = pcaState.rightName;\n    var ok = await pcaSyncAndSave(pcaState.rightPresetData, name);\n    if (!ok) { toastr.error('保存失败'); pcaRefreshDebug(); return; }\n    toastr.success('已覆盖保存「'+name+'」✓');\n    pcaRefreshDebug();\n}\n\nasync function pcaDoSaveAs() {\n    if(!pcaState.compared){toastr.warning('请先对比');return;}\n    var n=prompt('请输入新预设名称：',pcaState.rightName+'_修改版');\n    if(!n||!n.trim())return;\n    var ok=await pcaSavePresetToFile(pcaState.rightPresetData,n.trim());\n    if(ok){toastr.success('已另存为「'+n.trim()+'」');toastr.info('如列表未刷新请手动刷新页面');}\n    else toastr.error('保存失败');\n    pcaRefreshDebug();\n}\n\nfunction pcaDoSyncAll() {\n    if(!pcaState.compared)return;var c=0;\n    pcaState.diffs.forEach(function(d){\n        var cur=pcaGetEnabled(pcaState.rightPresetData,d.right.id);\n        if(cur!==d.left.enabled){\n            if(pcaState.originalValues[d.right.id]===undefined)pcaState.originalValues[d.right.id]=d.right.enabled;\n            pcaSetEnabled(pcaState.rightPresetData,d.right.id,d.left.enabled);c++;\n        }\n    });\n    pcaRenderDiffs();toastr.success('已同步 '+c+' 个');\n}\n\nfunction pcaDoMigrateAdd(entryIdx, opts) {\n    opts = opts || {};\n    if (entryIdx < 0 || entryIdx >= pcaState.leftEntries.length) { toastr.error('索引无效'); return; }\n    var entry = pcaState.leftEntries[entryIdx];\n    var alreadyPending = false;\n    pcaState.migratePending.forEach(function(p) { if (p.entry.id === entry.id) alreadyPending = true; });\n    if (alreadyPending) { if (!opts.silent) toastr.warning('已在队列中'); return; }\n\n    var rightEntries = pcaExtract(pcaState.rightPresetData);\n    var sameNameEntry = null;\n    rightEntries.forEach(function(re) { if (re.name === entry.name) sameNameEntry = re; });\n\n    if (sameNameEntry) {\n        // forceManualPos === true 时跳过覆盖判断，强制让用户挑位置（高级入口）\n        if (opts.forceManualPos) {\n            pcaShowInsertPositionPicker(entry, function(pos, afterName) {\n                if (pos < 0) return;\n                pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });\n                pcaState.migratePending.push({ action:'new', entry:JSON.parse(JSON.stringify(entry)), insertIndex:pos, insertAfterName:afterName, confidence:'high', posWarn:'' });\n                pcaRenderMigrate();\n                toastr.success('已添加新建：' + entry.name);\n            });\n            return;\n        }\n        pcaShowConfirm(\n            '⚠️ 目标预设中已存在同名条目：<br><br><span style=\"color:'+pcaC.gold+';font-weight:600;\">「'+pcaEsc(entry.name)+'」</span><br><br>是否加入覆盖到队列？（需点击「应用并保存」才真正生效）',\n            function(confirmed) {\n                if (confirmed) {\n                    pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });\n                    pcaState.migratePending.push({ action:'overwrite', entry:JSON.parse(JSON.stringify(entry)), targetId:sameNameEntry.id });\n                    pcaRenderMigrate();\n                    toastr.success('已添加覆盖：' + entry.name);\n                }\n            },\n            { yesText:'加入覆盖队列', noText:'取消' }\n        );\n        return;\n    }\n\n    // 没有同名条目：默认走\"智能定位\"，不再弹位置选择器\n    if (opts.forceManualPos) {\n        pcaShowInsertPositionPicker(entry, function(pos, afterName) {\n            if (pos < 0) return;\n            pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });\n            pcaState.migratePending.push({ action:'new', entry:JSON.parse(JSON.stringify(entry)), insertIndex:pos, insertAfterName:afterName, confidence:'high', posWarn:'' });\n            pcaRenderMigrate();\n            toastr.success('已添加新建：' + entry.name);\n        });\n        return;\n    }\n    var resolved = pcaResolveSamePosition(entry, pcaState.leftEntries, rightEntries);\n    pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });\n    pcaState.migratePending.push({\n        action:'new',\n        entry: JSON.parse(JSON.stringify(entry)),\n        insertIndex: resolved.insertIndex,\n        insertAfterName: resolved.insertAfterName || '',\n        insertBeforeName: resolved.insertBeforeName || '',\n        confidence: resolved.confidence,\n        posWarn: resolved.warn || ''\n    });\n    pcaRenderMigrate();\n    if (!opts.silent) {\n        var msg = '已添加：' + entry.name;\n        if (resolved.confidence === 'low') msg += '（位置不确定）';\n        toastr.success(msg);\n    }\n}\n\n// 复制为新条目：保留目标已有那条，再生成新 ID 作为独立新条目入队列\nfunction pcaDoMigrateAddAsNew(entryIdx) {\n    if (entryIdx < 0 || entryIdx >= pcaState.leftEntries.length) { toastr.error('索引无效'); return; }\n    var entry = pcaState.leftEntries[entryIdx];\n    // 深拷贝并替换 ID（保留所有其他字段，记录原 ID 方便后续从源预设取完整字段）\n    var clone = JSON.parse(JSON.stringify(entry));\n    clone._origId = entry.id;\n    clone.id = pcaGenEntryId();\n    // 入队列前确认 id 不冲突（已在 pending 或 right）\n    var rightEntries = pcaExtract(pcaState.rightPresetData);\n    var conflict = false;\n    rightEntries.forEach(function(re){ if (re.id === clone.id) conflict = true; });\n    pcaState.migratePending.forEach(function(p){ if (p.entry.id === clone.id) conflict = true; });\n    var safeGuard = 0;\n    while (conflict && safeGuard < 5) {\n        clone.id = pcaGenEntryId();\n        conflict = false;\n        rightEntries.forEach(function(re){ if (re.id === clone.id) conflict = true; });\n        pcaState.migratePending.forEach(function(p){ if (p.entry.id === clone.id) conflict = true; });\n        safeGuard++;\n    }\n    if (conflict) { toastr.error('生成 ID 冲突，请重试'); return; }\n    // 智能定位（按原条目在左侧的相对位置推导）\n    var resolved = pcaResolveSamePosition(entry, pcaState.leftEntries, rightEntries);\n    pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });\n    pcaState.migratePending.push({\n        action:'new',\n        entry: clone,\n        insertIndex: resolved.insertIndex,\n        insertAfterName: resolved.insertAfterName || '',\n        insertBeforeName: resolved.insertBeforeName || '',\n        confidence: resolved.confidence,\n        posWarn: resolved.warn || ''\n    });\n    pcaRenderMigrate();\n    toastr.success('已添加为新条目（新 ID）：' + clone.name);\n}\n\n// ========== 批量智能迁移 ==========\n// 弹出\"同名冲突一次性确认\"对话框\nfunction pcaShowBatchConflictDialog(conflicts, callback) {\n    var doc = pcaGetDoc();\n    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');\n    var html = '<div class=\"pca-modal-overlay\" id=\"pca-batch-conflict-overlay\">';\n    html += '<div style=\"background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:560px;max-width:96vw;max-height:80vh;max-height:80dvh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);\">';\n    html += '<div style=\"padding:14px 20px;border-bottom:1px solid '+pcaC.border+';flex-shrink:0;\">';\n    html += '<div style=\"font-size:15px;font-weight:700;color:'+pcaC.gold+';margin-bottom:4px;\">⚠ 检测到 '+conflicts.length+' 个同名条目</div>';\n    html += '<div style=\"font-size:12px;color:'+pcaC.dim+';\">勾选要\"覆盖\"目标的条目，未勾选的将被\"跳过\"</div>';\n    html += '</div>';\n    html += '<div style=\"flex:1;overflow-y:auto;padding:10px 16px;\">';\n    html += '<div style=\"display:flex;gap:8px;margin-bottom:10px;\">';\n    html += '<span data-pca-action=\"bcf-all-yes\" style=\"font-size:11px;color:'+pcaC.gold+';border:1px solid '+pcaC.goldDim+';border-radius:6px;padding:3px 10px;\">全部覆盖</span>';\n    html += '<span data-pca-action=\"bcf-all-no\" style=\"font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;\">全部跳过</span>';\n    html += '</div>';\n    conflicts.forEach(function(c, ci) {\n        html += '<div data-pca-action=\"bcf-toggle\" data-pca-idx=\"'+ci+'\" id=\"pca-bcf-row-'+ci+'\" style=\"display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid '+pcaC.border+';border-radius:6px;margin-bottom:5px;background:'+pcaC.card+';\">';\n        html += '<span id=\"pca-bcf-mark-'+ci+'\" style=\"font-size:16px;color:'+pcaC.gold+';flex-shrink:0;\">☑</span>';\n        html += '<span style=\"font-size:12px;color:'+pcaC.text+';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;\">'+pcaEsc(c.entry.name)+'</span>';\n        html += '<span style=\"font-size:10px;color:'+pcaC.dim+';flex-shrink:0;\">目标已存在</span>';\n        html += '</div>';\n    });\n    html += '</div>';\n    html += '<div style=\"padding:12px 20px;border-top:1px solid '+pcaC.border+';display:flex;justify-content:flex-end;gap:10px;flex-shrink:0;\">';\n    html += '<button data-pca-action=\"bcf-cancel\" class=\"pca-modal-btn\">取消整批</button>';\n    html += '<button data-pca-action=\"bcf-confirm\" class=\"pca-modal-btn-primary\">确认批量迁移</button>';\n    html += '</div></div></div>';\n\n    var overlay = doc.createElement('div');\n    overlay.innerHTML = html;\n    var overlayEl = overlay.firstChild;\n    if (existingDialog) existingDialog.appendChild(overlayEl); else doc.body.appendChild(overlayEl);\n\n    var states = conflicts.map(function() { return true; }); // 默认全部覆盖\n    function refreshRow(ci) {\n        var mark = doc.querySelector('#pca-bcf-mark-' + ci);\n        var row = doc.querySelector('#pca-bcf-row-' + ci);\n        if (!mark || !row) return;\n        if (states[ci]) {\n            mark.textContent = '☑'; mark.style.color = pcaC.gold;\n            row.style.background = 'rgba(212,168,83,0.06)';\n        } else {\n            mark.textContent = '☐'; mark.style.color = pcaC.dim;\n            row.style.background = pcaC.card;\n        }\n    }\n\n    overlayEl.addEventListener('click', function(e) {\n        e.stopPropagation();\n        var thisOverlay = doc.querySelector('#pca-batch-conflict-overlay');\n        var t = e.target;\n        while (t && t !== thisOverlay) {\n            if (t.getAttribute && t.getAttribute('data-pca-action')) break;\n            t = t.parentElement;\n        }\n        if (!t) return;\n        var act = t.getAttribute('data-pca-action');\n        if (act === 'bcf-cancel') { thisOverlay.remove(); callback(null); return; }\n        if (act === 'bcf-confirm') {\n            thisOverlay.remove();\n            var decisions = states.map(function(s, i) { return { entry: conflicts[i].entry, targetId: conflicts[i].targetId, overwrite: s }; });\n            callback(decisions);\n            return;\n        }\n        if (act === 'bcf-all-yes') { for (var i = 0; i < states.length; i++) { states[i] = true; refreshRow(i); } return; }\n        if (act === 'bcf-all-no') { for (var j = 0; j < states.length; j++) { states[j] = false; refreshRow(j); } return; }\n        if (act === 'bcf-toggle') {\n            var idx = parseInt(t.getAttribute('data-pca-idx'), 10);\n            if (!isNaN(idx) && idx >= 0 && idx < states.length) {\n                states[idx] = !states[idx];\n                refreshRow(idx);\n            }\n        }\n    });\n}\n\n// 批量智能迁移：对当前已选条目按\"每个独立智能定位\"处理\nfunction pcaDoBatchMigrate() {\n    var sel = pcaState.migrateSelected || {};\n    var selectedIds = Object.keys(sel).filter(function(k) { return sel[k]; });\n    if (selectedIds.length === 0) { toastr.warning('请先勾选条目'); return; }\n\n    // 收集已经在队列里的，跳过\n    var pendingIds = {};\n    pcaState.migratePending.forEach(function(p) { pendingIds[p.entry.id] = true; });\n\n    // 把已选项映射回 leftEntries 索引\n    var queue = []; // { entry, leftIdx, sameNameTarget|null }\n    var rightEntries = pcaExtract(pcaState.rightPresetData);\n    var rightByName = {};\n    rightEntries.forEach(function(re) { rightByName[re.name] = re; });\n\n    selectedIds.forEach(function(eid) {\n        for (var li = 0; li < pcaState.leftEntries.length; li++) {\n            var le = pcaState.leftEntries[li];\n            if (le.id !== eid) continue;\n            if (pendingIds[le.id]) return; // 已在队列\n            var sameName = rightByName[le.name] || null;\n            queue.push({ entry: le, leftIdx: li, sameName: sameName });\n            break;\n        }\n    });\n\n    if (queue.length === 0) { toastr.info('没有需要新增的条目（可能都已在队列中）'); return; }\n\n    // 拆分：同名冲突 vs 直接新建\n    var conflicts = [];\n    var newOnes = [];\n    queue.forEach(function(q) {\n        if (q.sameName) conflicts.push({ entry: q.entry, targetId: q.sameName.id });\n        else newOnes.push(q);\n    });\n\n    function applyNewOnes(extraOverwrites) {\n        var addedNew = 0, addedOver = 0, lowConf = 0;\n        // 先处理覆盖\n        if (extraOverwrites && extraOverwrites.length) {\n            extraOverwrites.forEach(function(d) {\n                pcaState.migrateUndoStack.push({ action:'add', index: pcaState.migratePending.length });\n                pcaState.migratePending.push({ action:'overwrite', entry: JSON.parse(JSON.stringify(d.entry)), targetId: d.targetId });\n                addedOver++;\n            });\n        }\n        // 处理新建：用智能定位\n        newOnes.forEach(function(q) {\n            var resolved = pcaResolveSamePosition(q.entry, pcaState.leftEntries, rightEntries);\n            if (resolved.confidence === 'low') lowConf++;\n            pcaState.migrateUndoStack.push({ action:'add', index: pcaState.migratePending.length });\n            pcaState.migratePending.push({\n                action: 'new',\n                entry: JSON.parse(JSON.stringify(q.entry)),\n                insertIndex: resolved.insertIndex,\n                insertAfterName: resolved.insertAfterName || '',\n                insertBeforeName: resolved.insertBeforeName || '',\n                confidence: resolved.confidence,\n                posWarn: resolved.warn || ''\n            });\n            addedNew++;\n        });\n        // 清空选择\n        pcaState.migrateSelected = {};\n        pcaRenderMigrate();\n        var msg = '已加入队列：' + addedNew + ' 新建';\n        if (addedOver) msg += '、' + addedOver + ' 覆盖';\n        if (lowConf) msg += '（其中 ' + lowConf + ' 项位置不确定，请检查队列）';\n        toastr.success(msg);\n    }\n\n    if (conflicts.length === 0) {\n        applyNewOnes([]);\n        return;\n    }\n    pcaShowBatchConflictDialog(conflicts, function(decisions) {\n        if (decisions === null) { toastr.info('已取消批量迁移'); return; }\n        var overwrites = decisions.filter(function(d) { return d.overwrite; });\n        applyNewOnes(overwrites);\n    });\n}\n\nasync function pcaDoMigrateApply() {\n    if (pcaState.migratePending.length === 0) { toastr.warning('队列为空'); return; }\n    pcaLog('应用迁移 ' + pcaState.migratePending.length + ' 个');\n    var preset = pcaState.rightPresetData;\n    var appliedCount = 0;\n\n    pcaState.migratePending.forEach(function(p) {\n        if (p.action === 'overwrite') {\n            var prompts = preset.prompts || [];\n            for (var i = 0; i < prompts.length; i++) {\n                if (prompts[i].name === p.entry.name || prompts[i].identifier === p.targetId) {\n                    prompts[i].content = p.entry.content || '';\n                    prompts[i].role = p.entry.role || prompts[i].role;\n                    // 应用字段编辑覆写（仅写明确改动的字段，避免破坏目标其他字段）\n                    var foOv = p.fieldOverrides || (p.entry && p.entry._fieldOverrides) || null;\n                    if (foOv) {\n                        if (typeof foOv.name === 'string' && foOv.name) prompts[i].name = foOv.name;\n                        if (typeof foOv.role === 'string') prompts[i].role = foOv.role;\n                        if (typeof foOv.injection_position === 'number') prompts[i].injection_position = foOv.injection_position;\n                        if (typeof foOv.injection_depth === 'number') prompts[i].injection_depth = foOv.injection_depth;\n                        if (typeof foOv.injection_order === 'number') prompts[i].injection_order = foOv.injection_order;\n                        if (Array.isArray(foOv.injection_trigger)) {\n                            prompts[i].injection_trigger = foOv.injection_trigger.slice();\n                        } else if (foOv.injection_trigger === null && Object.prototype.hasOwnProperty.call(prompts[i], 'injection_trigger')) {\n                            delete prompts[i].injection_trigger;\n                        }\n                        if (typeof foOv.system_prompt === 'boolean') prompts[i].system_prompt = foOv.system_prompt;\n                        if (typeof foOv.marker === 'boolean') prompts[i].marker = foOv.marker;\n                        if (typeof foOv.forbid_overrides === 'boolean') prompts[i].forbid_overrides = foOv.forbid_overrides;\n                    }\n                    break;\n                }\n            }\n            var order = pcaGetOrder(preset.prompt_order);\n            for (var j = 0; j < order.length; j++) {\n                if (order[j].identifier === p.targetId) { order[j].enabled = p.entry.enabled; break; }\n            }\n            appliedCount++;\n        }\n    });\n\n    var newEntries = [];\n    pcaState.migratePending.forEach(function(p) { if (p.action === 'new') newEntries.push(p); });\n    newEntries.sort(function(a, b) { return b.insertIndex - a.insertIndex; });\n    newEntries.forEach(function(p) {\n        pcaMigrateInsertEntry(preset, p.entry, p.insertIndex);\n        appliedCount++;\n    });\n\n    var name = pcaState.rightName;\n    var ok = await pcaSyncAndSave(preset, name);\n    if (!ok) { toastr.error('保存失败'); pcaRefreshDebug(); return; }\n\n    toastr.success('已迁移 ' + appliedCount + ' 个条目到「' + name + '」✓');\n    pcaState.migratePending = [];\n    pcaState.migrateUndoStack = [];\n    pcaState.rightEntries = pcaExtract(preset);\n    var result = pcaCompare(pcaState.leftEntries, pcaState.rightEntries);\n    pcaState.diffs = result.diffs;\n    pcaState.newItems = result.newItems;\n    var doc = pcaGetDoc();\n    if (doc.querySelector('#pca-tab-diff')) doc.querySelector('#pca-tab-diff').textContent = '开关差异 ('+result.diffs.length+')';\n    pcaRenderMigrate();\n    pcaRefreshDebug();\n}\n\n// ========== 条目编辑模块：应用并保存 ==========\nasync function pcaDoEditApply() {\n    if (pcaState.editPending.length === 0) { toastr.warning('队列为空'); return; }\n    var preset = pcaGetEditTargetPreset();\n    if (!preset) { toastr.error('找不到目标预设'); return; }\n    var presetName = pcaGetEditTargetName();\n    pcaLog('应用编辑 ' + pcaState.editPending.length + ' 个 to ' + presetName);\n    var appliedCount = 0;\n    var prompts = preset.prompts || (preset.prompts = []);\n    var order = pcaGetOrder(preset.prompt_order);\n\n    // 顺序执行：toggle / overwrite / delete / new / reorder\n    pcaState.editPending.forEach(function(p) {\n        try {\n            if (p.action === 'toggle') {\n                for (var i = 0; i < order.length; i++) {\n                    if (order[i].identifier === p.targetId) { order[i].enabled = !!p.enabled; appliedCount++; break; }\n                }\n            } else if (p.action === 'overwrite') {\n                for (var k = 0; k < prompts.length; k++) {\n                    if (prompts[k].identifier === p.targetId) {\n                        prompts[k].content = (p.entry && p.entry.content) || '';\n                        var fo = p.fieldOverrides || null;\n                        if (fo) {\n                            if (typeof fo.name === 'string' && fo.name) prompts[k].name = fo.name;\n                            if (typeof fo.role === 'string') prompts[k].role = fo.role;\n                            if (typeof fo.injection_position === 'number') prompts[k].injection_position = fo.injection_position;\n                            if (typeof fo.injection_depth === 'number') prompts[k].injection_depth = fo.injection_depth;\n                            if (typeof fo.injection_order === 'number') prompts[k].injection_order = fo.injection_order;\n                            if (Array.isArray(fo.injection_trigger)) prompts[k].injection_trigger = fo.injection_trigger.slice();\n                            else if (fo.injection_trigger === null && Object.prototype.hasOwnProperty.call(prompts[k], 'injection_trigger')) delete prompts[k].injection_trigger;\n                            if (typeof fo.system_prompt === 'boolean') prompts[k].system_prompt = fo.system_prompt;\n                            if (typeof fo.marker === 'boolean') prompts[k].marker = fo.marker;\n                            if (typeof fo.forbid_overrides === 'boolean') prompts[k].forbid_overrides = fo.forbid_overrides;\n                        }\n                        appliedCount++;\n                        break;\n                    }\n                }\n            } else if (p.action === 'delete') {\n                for (var di = prompts.length - 1; di >= 0; di--) {\n                    if (prompts[di].identifier === p.targetId) { prompts.splice(di, 1); break; }\n                }\n                for (var dj = order.length - 1; dj >= 0; dj--) {\n                    if (order[dj].identifier === p.targetId) { order.splice(dj, 1); break; }\n                }\n                appliedCount++;\n            } else if (p.action === 'new') {\n                var fo2 = p.fieldOverrides || null;\n                var newPrompt = {\n                    identifier: (fo2 && fo2.identifier) || p.entry.id,\n                    name: (fo2 && fo2.name) || p.entry.name || '新条目',\n                    content: (p.entry && p.entry.content) || '',\n                    role: (fo2 && fo2.role) || (p.entry && p.entry.role) || 'system',\n                    marker: false,\n                    system_prompt: false,\n                    forbid_overrides: false,\n                };\n                if (fo2) {\n                    if (typeof fo2.injection_position === 'number') newPrompt.injection_position = fo2.injection_position;\n                    if (typeof fo2.injection_depth === 'number') newPrompt.injection_depth = fo2.injection_depth;\n                    if (typeof fo2.injection_order === 'number') newPrompt.injection_order = fo2.injection_order;\n                    if (Array.isArray(fo2.injection_trigger)) newPrompt.injection_trigger = fo2.injection_trigger.slice();\n                    if (typeof fo2.system_prompt === 'boolean') newPrompt.system_prompt = fo2.system_prompt;\n                    if (typeof fo2.marker === 'boolean') newPrompt.marker = fo2.marker;\n                    if (typeof fo2.forbid_overrides === 'boolean') newPrompt.forbid_overrides = fo2.forbid_overrides;\n                }\n                prompts.push(newPrompt);\n                var insIdx = (typeof p.insertIndex === 'number') ? p.insertIndex : order.length;\n                if (insIdx < 0) insIdx = 0;\n                if (insIdx > order.length) insIdx = order.length;\n                order.splice(insIdx, 0, { identifier: newPrompt.identifier, enabled: !!(p.entry && p.entry.enabled) });\n                appliedCount++;\n            } else if (p.action === 'reorder') {\n                var fromI = -1;\n                for (var ri = 0; ri < order.length; ri++) {\n                    if (order[ri].identifier === p.targetId) { fromI = ri; break; }\n                }\n                if (fromI >= 0) {\n                    var item = order.splice(fromI, 1)[0];\n                    var to = p.newIndex;\n                    if (to < 0) to = 0;\n                    if (to > order.length) to = order.length;\n                    order.splice(to, 0, item);\n                    appliedCount++;\n                }\n            }\n        } catch (err) {\n            pcaLog('应用单项失败: ' + (err && err.message));\n        }\n    });\n\n    preset.prompts = prompts;\n    if (preset.prompt_order && Array.isArray(preset.prompt_order)) {\n        preset.prompt_order.forEach(function(po) { if (po && Array.isArray(po.order)) {} });\n    }\n\n    var ok = await pcaSyncAndSave(preset, presetName);\n    pcaRefreshDebug();\n    if (!ok) { toastr.error('保存失败'); return; }\n\n    toastr.success('已应用 ' + appliedCount + ' 个修改到「' + presetName + '」✓');\n    pcaState.editPending = [];\n    pcaState.editUndoStack = [];\n    // 刷新条目列表（左/右）\n    if (pcaState.editTarget === 'left') pcaState.leftEntries = pcaExtract(preset);\n    else pcaState.rightEntries = pcaExtract(preset);\n    var result = pcaCompare(pcaState.leftEntries, pcaState.rightEntries);\n    pcaState.diffs = result.diffs;\n    pcaState.newItems = result.newItems;\n    var doc = pcaGetDoc();\n    if (doc.querySelector('#pca-tab-diff')) doc.querySelector('#pca-tab-diff').textContent = '开关差异 ('+result.diffs.length+')';\n    pcaRenderEdit();\n}\n\nfunction pcaOpenPanel() {\n    pcaInjectCSS();\n    pcaLoadNotes();\n    pcaLoadFavGroups();\n    var names=pcaGetPresetNames();\n    var html=pcaBuildHTML(names);\n    var savedNotes = pcaState.migrateNotes || [];\n    pcaState={leftName:'',rightName:'',leftEntries:[],rightEntries:[],diffs:[],newItems:[],rightPresetData:null,leftPresetData:null,originalValues:{},activeTab:'diff',compared:false,allPresets:null,migrateSearch:'',migrateSelected:{},migrateNotes:savedNotes,migrateFavActive:false,migratePending:[],migrateUndoStack:[],migrateFilterStatus:'all',migrateFilterDiff:'all',migrateQueueExpanded:false,migrateFavGroups:(pcaState&&pcaState.migrateFavGroups)||{},activeFavGroupId:(pcaState&&pcaState.activeFavGroupId)||'',confHelpExpanded:false,editorClipText:(pcaState&&pcaState.editorClipText)||'',editorClipFrom:(pcaState&&pcaState.editorClipFrom)||'',editorState:null,editorDrafts:{},editorWrap:(pcaState&&typeof pcaState.editorWrap==='boolean')?pcaState.editorWrap:true,editTarget:'right',editPending:[],editUndoStack:[],editSearch:'',editOnlyNew:false,editQueueExpanded:false};\n    try {\n        var popup=new SillyTavern.Popup(html,SillyTavern.POPUP_TYPE.TEXT,'',{large:true,wide:true,allowVerticalScrolling:true});\n        popup.show();\n        setTimeout(function(){pcaBindPanel();},200);\n        return;\n    } catch(e) {}\n    var doc=pcaGetDoc();var old=doc.querySelector('#pca-overlay');if(old)old.remove();\n    var ov=doc.createElement('div');ov.id='pca-overlay';\n    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;';\n    ov.innerHTML=html;ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});\n    doc.body.appendChild(ov);pcaBindPanel();\n}\n\nfunction pcaBindPanel() {\n    var doc=pcaGetDoc();var root=doc.querySelector('#pca-root');if(!root)return;\n    if(root.getAttribute('data-pca-bound'))return;\n    root.setAttribute('data-pca-bound','1');\n\n    // 主题切换\n    var themeSel = root.querySelector('#pca-theme-select');\n    if (themeSel) {\n        themeSel.addEventListener('change', function(){\n            var v = themeSel.value;\n            // 重新打开面板让所有内联样式重新计算（最简单可靠的方式）\n            pcaApplyTheme(v, { rerender:false });\n            // 关闭当前面板再打开\n            var dlg = doc.querySelector('dialog.popup:has(#pca-root)');\n            var savedState = pcaState;\n            // 关闭可能存在的子浮层（编辑器、收藏夹、确认框、说明气泡），避免孤儿引用\n            var stale = ['#pca-editor-overlay','#pca-fav-picker-overlay','#pca-fav-mgr-overlay','#pca-insert-overlay','#pca-confirm-overlay','#pca-conf-help-popover'];\n            stale.forEach(function(sel){ var el = doc.querySelector(sel); if (el) el.remove(); });\n            if (savedState) savedState.editorState = null;\n            if (dlg) { try { dlg.close(); } catch(ex) {} dlg.remove(); }\n            var ov = doc.querySelector('#pca-overlay'); if (ov) ov.remove();\n            // 重新打开\n            pcaInjectCSS();\n            var names = pcaGetPresetNames();\n            var html = pcaBuildHTML(names);\n            try {\n                var popup = new SillyTavern.Popup(html, SillyTavern.POPUP_TYPE.TEXT, '', {large:true, wide:true, allowVerticalScrolling:true});\n                popup.show();\n                setTimeout(function(){\n                    // 还原 state 与 UI\n                    pcaState = savedState;\n                    pcaBindPanel();\n                    if (pcaState.compared) {\n                        // 还原下拉选择\n                        var ls = doc.querySelector('#pca-sel-left'); if (ls && pcaState.leftName) ls.value = pcaState.leftName;\n                        var rs = doc.querySelector('#pca-sel-right'); if (rs && pcaState.rightName) rs.value = pcaState.rightName;\n                        var tabs = doc.querySelector('#pca-tabs'); if (tabs) tabs.style.display = 'block';\n                        var footer = doc.querySelector('#pca-footer'); if (footer) footer.style.display = 'flex';\n                        pcaSwitchTab(pcaState.activeTab || 'diff');\n                    }\n                }, 200);\n            } catch(e) {}\n        });\n    }\n\n    root.addEventListener('click', function(e) {\n        var currentRoot=doc.querySelector('#pca-root');\n        var target=e.target;\n        while(target&&target!==currentRoot){if(target.getAttribute&&target.getAttribute('data-pca-action'))break;target=target.parentElement;}\n        if(!target||target===currentRoot)return;\n\n        var action=target.getAttribute('data-pca-action');\n        var idx=parseInt(target.getAttribute('data-pca-idx')||'-1',10);\n        var side=target.getAttribute('data-pca-side')||'';\n\n        switch(action){\n            case 'close':\n                var doClose = function() {\n                    var edOv = doc.querySelector('#pca-editor-overlay');\n                    if (edOv) edOv.remove();\n                    pcaState.editorState = null;\n                    var dlg=doc.querySelector('dialog.popup:has(#pca-root)');\n                    if(dlg){try{dlg.close();}catch(ex){}dlg.remove();return;}\n                    var ov=doc.querySelector('#pca-overlay');if(ov)ov.remove();\n                };\n                if (pcaState.migratePending.length > 0) {\n                    pcaShowConfirm(\n                        '⚠️ 待迁移队列中还有 <span style=\"color:'+pcaC.migrate+';font-weight:600;\">'+pcaState.migratePending.length+'</span> 个未保存的条目<br><br>关闭后将丢失这些待迁移项，确定关闭吗？',\n                        function(confirmed) { if (confirmed) doClose(); },\n                        { yesText:'丢弃并关闭', noText:'继续编辑', yesColor:pcaC.danger, yesColorDim:'#a04050' }\n                    );\n                } else {\n                    doClose();\n                }\n                break;\n            case 'compare':pcaDoCompare();break;\n            case 'debug-toggle':\n                var area=doc.querySelector('#pca-debug-area');\n                if(area){area.style.display=area.style.display==='none'?'block':'none';pcaRefreshDebug();}\n                break;\n            case 'tab-diff':pcaSwitchTab('diff');break;\n            case 'tab-edit':pcaSwitchTab('edit');break;\n            case 'edit-target':\n                var sd = target.getAttribute('data-pca-side');\n                if (sd === 'left' || sd === 'right') {\n                    if (pcaState.editTarget !== sd && pcaState.editPending.length > 0) {\n                        pcaShowConfirm('切换目标会清空当前「待修改队列」（'+pcaState.editPending.length+' 项），确定？', function(ok){\n                            if (!ok) return;\n                            pcaState.editTarget = sd;\n                            pcaState.editPending = [];\n                            pcaState.editUndoStack = [];\n                            pcaRenderEdit();\n                        }, { yesText:'切换并清空', noText:'取消', yesColor:pcaC.danger, yesColorDim:'#a04050' });\n                    } else {\n                        pcaState.editTarget = sd;\n                        pcaRenderEdit();\n                    }\n                }\n                break;\n            case 'edit-new-entry': pcaEditDoNewEntry(); break;\n            case 'edit-toggle': if (idx >= 0) pcaEditDoToggle(idx); break;\n            case 'edit-edit': if (idx >= 0) pcaEditDoEdit(idx); break;\n            case 'edit-delete': if (idx >= 0) pcaEditDoDelete(idx); break;\n            case 'edit-move':\n                if (idx >= 0) {\n                    var dir = target.getAttribute('data-pca-dir');\n                    var entries_em = pcaGetEditTargetEntries();\n                    var to = (dir === 'up') ? idx - 1 : idx + 1;\n                    if (to >= 0 && to < entries_em.length) pcaEditMoveTo(idx, to);\n                }\n                break;\n            case 'edit-pending-remove':\n                if (idx >= 0 && idx < pcaState.editPending.length) {\n                    pcaState.editPending.splice(idx, 1);\n                    pcaRenderEdit();\n                }\n                break;\n            case 'edit-undo':\n                if (pcaState.editUndoStack.length > 0) {\n                    var last = pcaState.editUndoStack.pop();\n                    if (last.action === 'add' && last.index < pcaState.editPending.length) {\n                        pcaState.editPending.splice(last.index, 1);\n                    }\n                    pcaRenderEdit();\n                }\n                break;\n            case 'edit-clear':\n                pcaShowConfirm('清空整个待修改队列？', function(ok){\n                    if (!ok) return;\n                    pcaState.editPending = [];\n                    pcaState.editUndoStack = [];\n                    pcaRenderEdit();\n                }, { yesText:'清空', noText:'取消', yesColor:pcaC.danger, yesColorDim:'#a04050' });\n                break;\n            case 'edit-apply':\n                pcaDoEditApply();\n                break;\n            case 'edit-queue-toggle':\n                pcaState.editQueueExpanded = !pcaState.editQueueExpanded;\n                pcaRenderEdit();\n                break;\n            case 'tab-migrate':pcaSwitchTab('migrate');break;\n            case 'syncall':pcaDoSyncAll();break;\n            case 'save':pcaDoSave();break;\n            case 'saveas':pcaDoSaveAs();break;\n\n            case 'sync':\n                if(idx>=0&&pcaState.diffs[idx]){\n                    var d=pcaState.diffs[idx];\n                    if(pcaState.originalValues[d.right.id]===undefined)pcaState.originalValues[d.right.id]=d.right.enabled;\n                    pcaSetEnabled(pcaState.rightPresetData,d.right.id,d.left.enabled);\n                    pcaRenderDiffs();\n                }\n                break;\n            case 'revert':\n                if(idx>=0&&pcaState.diffs[idx]){\n                    var dr=pcaState.diffs[idx];\n                    pcaSetEnabled(pcaState.rightPresetData,dr.right.id,dr.right.enabled);\n                    delete pcaState.originalValues[dr.right.id];\n                    pcaRenderDiffs();\n                }\n                break;\n            case 'toggle':\n                if(idx>=0&&pcaState.diffs[idx]){\n                    var dt=pcaState.diffs[idx];\n                    if(pcaState.originalValues[dt.right.id]===undefined)pcaState.originalValues[dt.right.id]=dt.right.enabled;\n                    var cur=pcaGetEnabled(pcaState.rightPresetData,dt.right.id);\n                    pcaSetEnabled(pcaState.rightPresetData,dt.right.id,!cur);\n                    pcaRenderDiffs();\n                }\n                break;\n            case 'toggle-new':\n                // 兼容老入口；新逻辑在条目编辑面板里\n                if(idx>=0&&pcaState.newItems[idx]){\n                    var ni=pcaState.newItems[idx];\n                    var cn=pcaGetEnabled(pcaState.rightPresetData,ni.right.id);\n                    pcaSetEnabled(pcaState.rightPresetData,ni.right.id,!cn);\n                }\n                break;\n\n            case 'view':\n                if(idx>=0&&pcaState.diffs[idx]){\n                    var el=doc.querySelector('#pca-pv-'+idx);if(!el)break;\n                    if(el.style.display!=='none'&&el.getAttribute('data-side')===side){el.style.display='none';break;}\n                    var dv=pcaState.diffs[idx];\n                    el.setAttribute('data-side',side);el.style.display='block';\n                    if(side==='diff'){\n                        el.innerHTML=pcaRenderDiffHTML(dv.left.content,dv.right.content);\n                    } else {\n                        var cnt=side==='left'?dv.left.content:dv.right.content;\n                        var lbl=side==='left'?'左侧(旧)':'右侧(新)';\n                        el.innerHTML='<div style=\"background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:8px;padding:10px 14px;max-height:250px;overflow-y:auto;font-size:12px;line-height:1.6;color:'+pcaC.dim+';white-space:pre-wrap;word-break:break-all;\"><div style=\"color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;\">['+lbl+'] 内容：</div>'+(cnt?pcaEsc(cnt):'<span style=\"color:#555;\">（空内容）</span>')+'</div>';\n                    }\n                }\n                break;\n            case 'view-new':\n                if(idx>=0&&pcaState.newItems[idx]){\n                    var elN=doc.querySelector('#pca-pvn-'+idx);if(!elN)break;\n                    if(elN.style.display!=='none'){elN.style.display='none';break;}\n                    var cntN=pcaState.newItems[idx].right.content;\n                    elN.style.display='block';\n                    elN.innerHTML='<div style=\"background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:8px;padding:10px 14px;max-height:250px;overflow-y:auto;font-size:12px;line-height:1.6;color:'+pcaC.dim+';white-space:pre-wrap;word-break:break-all;\"><div style=\"color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;\">内容：</div>'+(cntN?pcaEsc(cntN):'<span style=\"color:#555;\">（空内容 / 标记类条目）</span>')+'</div>';\n                }\n                break;\n\n            case 'migrate-edit':\n                if (idx >= 0 && idx < pcaState.leftEntries.length) {\n                    pcaOpenEditor(pcaState.leftEntries[idx]);\n                }\n                break;\n            case 'migrate-edit-pending':\n                if (idx >= 0 && idx < pcaState.migratePending.length) {\n                    var pendingP = pcaState.migratePending[idx];\n                    // 找到对应的 leftEntry 作为编辑基准\n                    var srcEntry = null;\n                    for (var spi = 0; spi < pcaState.leftEntries.length; spi++) {\n                        if (pcaState.leftEntries[spi].id === pendingP.entry.id) {\n                            srcEntry = pcaState.leftEntries[spi];\n                            break;\n                        }\n                    }\n                    if (srcEntry) pcaOpenEditor(srcEntry);\n                    else toastr.error('找不到原始条目');\n                }\n                break;\n\n            case 'migrate-add':\n                if (idx >= 0) pcaDoMigrateAdd(idx);\n                break;\n            case 'migrate-add-as-new':\n                if (idx >= 0) pcaDoMigrateAddAsNew(idx);\n                break;\n            case 'batch-toggle':\n                var btId = target.getAttribute('data-pca-entry-id');\n                if (btId) {\n                    if (!pcaState.migrateSelected) pcaState.migrateSelected = {};\n                    if (pcaState.migrateSelected[btId]) delete pcaState.migrateSelected[btId];\n                    else pcaState.migrateSelected[btId] = true;\n                    pcaRenderMigrate();\n                }\n                break;\n            case 'batch-select-all':\n                if (!pcaState.migrateSelected) pcaState.migrateSelected = {};\n                var visIds = pcaGetVisibleLeftEntryIds();\n                visIds.forEach(function(id) { pcaState.migrateSelected[id] = true; });\n                pcaRenderMigrate();\n                break;\n            case 'batch-invert':\n                if (!pcaState.migrateSelected) pcaState.migrateSelected = {};\n                var visIds2 = pcaGetVisibleLeftEntryIds();\n                visIds2.forEach(function(id) {\n                    if (pcaState.migrateSelected[id]) delete pcaState.migrateSelected[id];\n                    else pcaState.migrateSelected[id] = true;\n                });\n                pcaRenderMigrate();\n                break;\n            case 'batch-clear':\n                pcaState.migrateSelected = {};\n                pcaRenderMigrate();\n                break;\n            case 'batch-migrate':\n                pcaDoBatchMigrate();\n                break;\n            case 'conf-help-popover':\n                pcaShowConfHelpPopover(target);\n                break;\n            case 'batch-fav':\n                // P4 预留：调用收藏夹分组选择器\n                var bfSel = pcaState.migrateSelected || {};\n                var bfNames = [];\n                Object.keys(bfSel).forEach(function(eid) {\n                    if (!bfSel[eid]) return;\n                    for (var bi = 0; bi < pcaState.leftEntries.length; bi++) {\n                        if (pcaState.leftEntries[bi].id === eid) { bfNames.push(pcaState.leftEntries[bi].name); break; }\n                    }\n                });\n                if (bfNames.length === 0) { toastr.warning('请先勾选条目'); break; }\n                pcaRenderFavGroupPicker(bfNames, function(_groupId) {});\n                break;\n            case 'migrate-repos':\n                if (idx >= 0 && idx < pcaState.migratePending.length) {\n                    var pItem = pcaState.migratePending[idx];\n                    if (pItem.action !== 'new') { toastr.info('覆盖类条目无需选位置'); break; }\n                    pcaShowInsertPositionPicker(pItem.entry, function(pos, afterName) {\n                        if (pos < 0) return;\n                        pcaState.migrateUndoStack.push({ action:'edit', index:idx, prevItem: JSON.parse(JSON.stringify(pItem)) });\n                        pItem.insertIndex = pos;\n                        pItem.insertAfterName = afterName || '';\n                        pItem.insertBeforeName = '';\n                        pItem.confidence = 'high';\n                        pItem.posWarn = '';\n                        pcaRenderMigrate();\n                        toastr.success('位置已更新');\n                    });\n                }\n                break;\n            case 'migrate-remove':\n                if (idx >= 0 && pcaState.migratePending[idx]) {\n                    pcaState.migrateUndoStack.push({ action:'remove', item:JSON.parse(JSON.stringify(pcaState.migratePending[idx])), index:idx });\n                    pcaState.migratePending.splice(idx, 1);\n                    pcaRenderMigrate();\n                }\n                break;\n            case 'migrate-undo':\n                if (pcaState.migrateUndoStack.length > 0) {\n                    var undoItem = pcaState.migrateUndoStack.pop();\n                    if (undoItem.action === 'add') {\n                        if (undoItem.index < pcaState.migratePending.length) pcaState.migratePending.splice(undoItem.index, 1);\n                    } else if (undoItem.action === 'remove') {\n                        pcaState.migratePending.splice(undoItem.index, 0, undoItem.item);\n                    } else if (undoItem.action === 'edit') {\n                        if (undoItem.index < pcaState.migratePending.length) {\n                            pcaState.migratePending[undoItem.index] = undoItem.prevItem;\n                        }\n                    }\n                    pcaRenderMigrate();\n                    toastr.info('已撤销');\n                }\n                break;\n            case 'migrate-clear':\n                pcaState.migrateUndoStack = [];\n                pcaState.migratePending = [];\n                pcaRenderMigrate();\n                toastr.info('已清空队列');\n                break;\n            case 'migrate-apply':\n                pcaDoMigrateApply();\n                break;\n            case 'migrate-preview':\n                if (idx >= 0 && idx < pcaState.leftEntries.length) {\n                    var mpEl = doc.querySelector('#pca-mpv-' + idx);\n                    if (!mpEl) break;\n                    if (mpEl.style.display !== 'none') { mpEl.style.display = 'none'; break; }\n                    var mEntry = pcaState.leftEntries[idx];\n                    mpEl.style.display = 'block';\n                    mpEl.innerHTML = '<div style=\"background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:8px;padding:10px 14px;max-height:200px;overflow-y:auto;font-size:12px;line-height:1.6;color:'+pcaC.dim+';white-space:pre-wrap;word-break:break-all;\"><div style=\"color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;\">内容：</div>'+(mEntry.content?pcaEsc(mEntry.content):'<span style=\"color:#555;\">（空内容）</span>')+'</div>';\n                }\n                break;\n            case 'migrate-clear-filter':\n                pcaState.migrateSearch = '';\n                pcaState.migrateFavActive = false;\n                pcaState.migrateFilterStatus = 'all';\n                pcaState.migrateFilterDiff = 'all';\n                pcaState.activeFavGroupId = '';\n                pcaRenderMigrate();\n                break;\n\n            case 'note-add':\n                pcaAddNote();\n                break;\n            case 'note-del':\n                (function() {\n                    var gidD = pcaState.activeFavGroupId || '';\n                    var arrD;\n                    if (gidD) {\n                        pcaLoadFavGroups();\n                        var gD = pcaState.migrateFavGroups[gidD];\n                        if (!gD) return;\n                        arrD = gD.notes || [];\n                    } else {\n                        arrD = pcaState.migrateNotes || [];\n                    }\n                    if (idx < 0 || idx >= arrD.length) return;\n                    var nameD = arrD[idx];\n                    pcaRemoveFromFavGroup(nameD, gidD);\n                    pcaRenderMigrate();\n                    toastr.info('已移除：' + nameD);\n                })();\n                break;\n            case 'note-find':\n                (function() {\n                    var gidF = pcaState.activeFavGroupId || '';\n                    var arrF;\n                    if (gidF) {\n                        pcaLoadFavGroups();\n                        var gF = pcaState.migrateFavGroups[gidF];\n                        if (!gF) return;\n                        arrF = gF.notes || [];\n                    } else {\n                        arrF = pcaState.migrateNotes || [];\n                    }\n                    if (idx < 0 || idx >= arrF.length) return;\n                    pcaState.migrateSearch = arrF[idx];\n                    pcaState.migrateFavActive = false;\n                    pcaRenderMigrate();\n                })();\n                break;\n            case 'fav-tab-pick':\n                pcaState.activeFavGroupId = target.getAttribute('data-pca-gid') || '';\n                pcaRenderMigrate();\n                break;\n            case 'fav-mgr-open':\n                pcaRenderFavGroupManager();\n                break;\n            case 'queue-toggle':\n                pcaState.migrateQueueExpanded = !pcaState.migrateQueueExpanded;\n                pcaRenderMigrate();\n                break;\n            case 'filter-status':\n                pcaState.migrateFilterStatus = target.getAttribute('data-pca-val') || 'all';\n                pcaRenderMigrate();\n                break;\n            case 'filter-diff':\n                pcaState.migrateFilterDiff = target.getAttribute('data-pca-val') || 'all';\n                pcaRenderMigrate();\n                break;\n            case 'migrate-diff':\n                if (idx >= 0 && idx < pcaState.leftEntries.length) {\n                    var dEl = doc.querySelector('#pca-mpv-' + idx);\n                    if (!dEl) break;\n                    if (dEl.style.display !== 'none' && dEl.getAttribute('data-mode') === 'diff') { dEl.style.display = 'none'; break; }\n                    var lEnt = pcaState.leftEntries[idx];\n                    var rEnt = null;\n                    pcaState.rightEntries.forEach(function(re) { if (re.id === lEnt.id || re.name === lEnt.name) rEnt = re; });\n                    dEl.setAttribute('data-mode', 'diff');\n                    dEl.style.display = 'block';\n                    dEl.innerHTML = pcaRenderDiffHTML(rEnt ? rEnt.content : '', lEnt.content);\n                }\n                break;\n            case 'fav-toggle-all':\n                pcaState.migrateFavActive = !pcaState.migrateFavActive;\n                if (pcaState.migrateFavActive) pcaState.migrateSearch = '';\n                pcaRenderMigrate();\n                if (pcaState.migrateFavActive) {\n                    var favNamesNow = pcaGetActiveFavNames();\n                    var favLabel = pcaState.activeFavGroupId\n                        ? ((pcaState.migrateFavGroups[pcaState.activeFavGroupId] && pcaState.migrateFavGroups[pcaState.activeFavGroupId].name) || '?')\n                        : '未分组';\n                    toastr.info('已按「'+favLabel+'」筛选 ' + favNamesNow.length + ' 个条目');\n                }\n                break;\n        }\n    });\n}\n\npcaSetupButton();\npcaLoadNotes();\npcaLoadFavGroups();\npcaLog('v2.7 就绪');",
-  "info": "太过沉迷小克以至于古战场四档了",
-  "button": {
-    "enabled": true,
-    "buttons": []
-  },
-  "data": {}
+// ==UserScript==
+// @name         预设对比助手
+// @description  对比两个Chat Completion预设的prompt条目开关差异 + 条目迁移
+// @version      2.7.0
+// ==/UserScript==
+
+// ==== 美化主题包接口（用户自定义钩子，可在脚本顶部直接赋值覆盖任意 token）====
+// 示例： var PCA_USER_THEME = { name:'我的', colors:{ primary:'#ff0080' } };
+var PCA_USER_THEME = null;
+
+// ==== 主题数据 ====
+// 设计原则：新增主题只需在 pcaThemes 里加一份对象。
+// 字段约定：sheen 字段为流光主色（一般等于 accent），用于按钮/标题金光扫过动画。
+var pcaThemes = {
+    // 苹果（黑底微紫 + 饱和暗血红 + 少量微紫白；金色仅做罕见装饰）
+    'apple': {
+        name: '苹果',
+        colors: {
+            bg:'#08080c',          // 近黑，仅一丝冷调
+            surface:'#101015',     // 黑色微泛紫
+            surfaceHi:'#1a1620',   // 黑+极少量紫
+            border:'#2a2530',      // 灰紫黑边
+            borderHi:'#4a3e55',    // 暗紫灰高亮边（边缘还能看出紫）
+            primary:'#8a1a2e',     // 暗血红（主操作色，饱和但暗）
+            primaryDim:'#6e1626',  // 深血红（渐变末端 / 边框）
+            accent:'#a8243a',      // 焦血红（hover 提亮，仍属暗红）
+            accentDim:'#6e1626',
+            text:'#ece8f4',        // 微紫白（贝利尔发色）
+            textDim:'#7a7388',     // 中紫灰
+            textOff:'#3a3540',     // 失效灰紫
+            danger:'#c54052',      // 错误（比 primary 略亮以区分）
+            warning:'#8a7448',     // 暗金（罕用警示）
+            success:'#5e8a6f',     // 暗绿（去饱和）
+            info:'#7a6890',        // 暗紫罗兰
+            infoDim:'#4a3e55',
+            input:'#0c0c12',
+        },
+        fonts: { sans:"'Segoe UI',system-ui,-apple-system,sans-serif", mono:"Consolas,Menlo,monospace" },
+        sheen: '#b8243a',          // 流光红（动画扫过的瞬间亮起）
+    },
+    // 月光：深夜星空 + 月光银蓝 + 提亮符文金
+    'moonlight': {
+        name: '月光',
+        colors: {
+            bg:'#0d0e1a', surface:'#171a2e', surfaceHi:'#1f2340',
+            border:'#262a45', borderHi:'#3a4068',
+            primary:'#e8d394', primaryDim:'#b89e60',         // 提亮符文金（清透）
+            accent:'#9eb4d8', accentDim:'#6c81a8',           // 月光银蓝
+            text:'#e8e6f0', textDim:'#7c809a', textOff:'#3a3e58',
+            danger:'#c5546b', warning:'#e8c060', success:'#7eb695',
+            info:'#9eb4d8', infoDim:'#6c81a8',
+            input:'#0f1124',
+        },
+        fonts: { sans:"'Segoe UI',system-ui,-apple-system,sans-serif", mono:"Consolas,Menlo,monospace" },
+        sheen: '#f5e5b8',          // 流光银金（更亮）
+    },
+};
+
+// 旧主题名兼容映射（避免老用户 localStorage 里的 'default'/'magic' 失效）
+var pcaThemeAliases = { 'default':'apple', 'magic':'moonlight' };
+
+// 全局颜色对象 — 由 pcaApplyTheme 动态填充。下方的 default 值仅在主题应用前作为兜底，
+// 兼容旧字段名（card/card2/pink/pinkDim/gold/goldDim/dim/off/migrate*/diff*）。
+var pcaC = {};
+
+function pcaApplyTheme(name, opts) {
+    opts = opts || {};
+    // 旧名兼容
+    if (pcaThemeAliases && pcaThemeAliases[name]) name = pcaThemeAliases[name];
+    var theme = pcaThemes[name] || pcaThemes['apple'];
+    // 用户钩子覆盖
+    if (PCA_USER_THEME && PCA_USER_THEME.colors) {
+        var merged = {};
+        Object.keys(theme.colors).forEach(function(k){ merged[k] = theme.colors[k]; });
+        Object.keys(PCA_USER_THEME.colors).forEach(function(k){ merged[k] = PCA_USER_THEME.colors[k]; });
+        theme = { name:(PCA_USER_THEME.name||theme.name), colors:merged, fonts:(PCA_USER_THEME.fonts||theme.fonts) };
+    }
+    var c = theme.colors;
+    // 写入新语义 token
+    pcaC.bg=c.bg; pcaC.surface=c.surface; pcaC.surfaceHi=c.surfaceHi;
+    pcaC.border=c.border; pcaC.borderHi=c.borderHi;
+    pcaC.primary=c.primary; pcaC.primaryDim=c.primaryDim;
+    pcaC.accent=c.accent; pcaC.accentDim=c.accentDim;
+    pcaC.text=c.text; pcaC.textDim=c.textDim; pcaC.textOff=c.textOff;
+    pcaC.danger=c.danger; pcaC.warning=c.warning; pcaC.success=c.success;
+    pcaC.info=c.info; pcaC.infoDim=c.infoDim; pcaC.input=c.input;
+    // 兼容旧字段名（避免一次性替换全文 ~30 处引用）
+    pcaC.card=c.surface; pcaC.card2=c.surfaceHi;
+    pcaC.pink=c.primary; pcaC.pinkDim=c.primaryDim;
+    pcaC.gold=c.accent; pcaC.goldDim=c.accentDim;
+    pcaC.dim=c.textDim; pcaC.off=c.textOff;
+    pcaC.migrate=c.info; pcaC.migrateDim=c.infoDim;
+    pcaC.migrateBg='rgba('+pcaHexToRgb(c.info)+',0.1)';
+    pcaC.migrateBorder='rgba('+pcaHexToRgb(c.info)+',0.3)';
+    pcaC.diffAdd='rgba('+pcaHexToRgb(c.success)+',0.15)';
+    pcaC.diffAddBorder='rgba('+pcaHexToRgb(c.success)+',0.4)';
+    pcaC.diffDel='rgba('+pcaHexToRgb(c.danger)+',0.15)';
+    pcaC.diffDelBorder='rgba('+pcaHexToRgb(c.danger)+',0.4)';
+    pcaC.diffAddText=c.success; pcaC.diffDelText=c.danger;
+    // 字体
+    pcaC._fontSans = (theme.fonts && theme.fonts.sans) || "'Segoe UI',sans-serif";
+    pcaC._fontMono = (theme.fonts && theme.fonts.mono) || "Consolas,monospace";
+    // 流光色
+    pcaC.sheen = theme.sheen || c.primary;
+    pcaC._themeName = name;
+    pcaC._themeLabel = theme.name;
+    // 持久化
+    if (!opts.skipPersist) { try { localStorage.setItem('pca_theme', name); } catch(e) {} }
+    // 重新注入 CSS
+    if (typeof pcaInjectCSS === 'function') pcaInjectCSS();
+    // 重渲染当前 UI
+    if (opts.rerender !== false && typeof pcaState !== 'undefined' && pcaState && pcaState.compared) {
+        try {
+            if (pcaState.activeTab === 'migrate' && typeof pcaRenderMigrate === 'function') pcaRenderMigrate();
+            else if (pcaState.activeTab === 'edit' && typeof pcaRenderEdit === 'function') pcaRenderEdit();
+            else if (typeof pcaRenderDiffs === 'function') pcaRenderDiffs();
+        } catch(e) {}
+    }
 }
+function pcaHexToRgb(hex) {
+    hex = (hex || '').replace('#','');
+    if (hex.length === 3) hex = hex.split('').map(function(c){return c+c;}).join('');
+    var n = parseInt(hex, 16);
+    return ((n>>16)&255)+','+((n>>8)&255)+','+(n&255);
+}
+// 启动时应用持久化主题
+(function(){
+    var saved = null;
+    try { saved = localStorage.getItem('pca_theme'); } catch(e) {}
+    if (saved && pcaThemeAliases[saved]) saved = pcaThemeAliases[saved];
+    pcaApplyTheme((saved && pcaThemes[saved]) ? saved : 'apple', { skipPersist:true, rerender:false });
+})();
+
+var pcaLogs = [];
+function pcaLog(msg) {
+    var t = new Date().toLocaleTimeString('zh-CN',{hour12:false});
+    pcaLogs.push(t + ' ' + msg);
+    if (pcaLogs.length > 300) pcaLogs.splice(0, pcaLogs.length - 300);
+    console.log('[预设对比]', msg);
+}
+function pcaEsc(s) { var d = document.createElement('div'); d.textContent = s||''; return d.innerHTML; }
+function pcaAttr(s) { return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function pcaGetDoc() { try { return window.parent.document; } catch(e) { return document; } }
+function pcaGetWin() { try { return window.parent; } catch(e) { return window; } }
+function pcaGetJQ() {
+    var w = pcaGetWin();
+    if (w && (w.jQuery || w.$)) return w.jQuery || w.$;
+    return (typeof jQuery !== 'undefined') ? jQuery : ((typeof $ !== 'undefined') ? $ : null);
+}
+function pcaQ(sel) { return pcaGetDoc().querySelector(sel); }
+function pcaGetHeaders() {
+    var h = {'Content-Type':'application/json'};
+    try { var ctx = SillyTavern.getContext(); if (typeof ctx.getRequestHeaders === 'function') Object.assign(h, ctx.getRequestHeaders()); } catch(e) {}
+    return h;
+}
+
+function pcaDiffLines(oldText, newText) {
+    var oldLines = (oldText || '').split('\n');
+    var newLines = (newText || '').split('\n');
+    var m = oldLines.length, n = newLines.length;
+    if (m * n > 500000) return pcaDiffSimple(oldLines, newLines);
+    var dp = [];
+    for (var i = 0; i <= m; i++) { dp[i] = []; for (var j = 0; j <= n; j++) dp[i][j] = 0; }
+    for (var i2 = 1; i2 <= m; i2++) {
+        for (var j2 = 1; j2 <= n; j2++) {
+            if (oldLines[i2-1] === newLines[j2-1]) dp[i2][j2] = dp[i2-1][j2-1] + 1;
+            else dp[i2][j2] = Math.max(dp[i2-1][j2], dp[i2][j2-1]);
+        }
+    }
+    var result = [];
+    var oi = m, ni = n;
+    while (oi > 0 || ni > 0) {
+        if (oi > 0 && ni > 0 && oldLines[oi-1] === newLines[ni-1]) { result.unshift({type:'same',text:oldLines[oi-1]}); oi--; ni--; }
+        else if (ni > 0 && (oi === 0 || dp[oi][ni-1] >= dp[oi-1][ni])) { result.unshift({type:'add',text:newLines[ni-1]}); ni--; }
+        else { result.unshift({type:'del',text:oldLines[oi-1]}); oi--; }
+    }
+    return result;
+}
+function pcaDiffSimple(oldLines, newLines) {
+    var result = [];
+    var oi=0, ni=0;
+    while (oi < oldLines.length || ni < newLines.length) {
+        if (oi < oldLines.length && ni < newLines.length && oldLines[oi] === newLines[ni]) { result.push({type:'same',text:oldLines[oi]}); oi++; ni++; }
+        else if (oi < oldLines.length) { result.push({type:'del',text:oldLines[oi]}); oi++; }
+        else if (ni < newLines.length) { result.push({type:'add',text:newLines[ni]}); ni++; }
+    }
+    return result;
+}
+function pcaIsRewrite(diffResult) {
+    if (!diffResult.length) return false;
+    var same=0, total=0;
+    diffResult.forEach(function(d){ if(d.text.trim()){total++;if(d.type==='same')same++;} });
+    return total>0 && (same/total)<0.2;
+}
+function pcaHasContentDiff(leftContent, rightContent) {
+    return (leftContent||'') !== (rightContent||'');
+}
+function pcaRenderDiffHTML(leftContent, rightContent) {
+    if (!leftContent && !rightContent) return '<div style="color:#555;padding:8px;">（两侧都是空内容）</div>';
+    if (!leftContent) return '<div style="padding:8px;"><div style="color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;">\ud83d\udcdd 左侧为空，右侧全部为新增内容：</div><div style="background:'+pcaC.diffAdd+';border-left:3px solid '+pcaC.diffAddBorder+';padding:6px 10px;border-radius:4px;font-size:12px;line-height:1.6;color:'+pcaC.diffAddText+';white-space:pre-wrap;word-break:break-all;">'+pcaEsc(rightContent)+'</div></div>';
+    if (!rightContent) return '<div style="padding:8px;"><div style="color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;">\ud83d\udcdd 右侧为空，左侧全部内容已删除：</div><div style="background:'+pcaC.diffDel+';border-left:3px solid '+pcaC.diffDelBorder+';padding:6px 10px;border-radius:4px;font-size:12px;line-height:1.6;color:'+pcaC.diffDelText+';white-space:pre-wrap;word-break:break-all;">'+pcaEsc(leftContent)+'</div></div>';
+    if (leftContent === rightContent) return '<div style="color:'+pcaC.success+';padding:8px;font-size:13px;">✓ 内容完全相同</div>';
+    var diff = pcaDiffLines(leftContent, rightContent);
+    var rewrite = pcaIsRewrite(diff);
+    if (rewrite) {
+        return '<div style="padding:8px;"><div style="color:'+pcaC.gold+';font-size:11px;margin-bottom:8px;font-weight:600;">⚠️ 内容几乎完全重写（相同部分＜20%），左右并排展示：</div><div style="display:flex;gap:10px;"><div style="flex:1;min-width:0;"><div style="font-size:10px;color:'+pcaC.diffDelText+';margin-bottom:4px;font-weight:600;">◀ 左侧（旧）</div><div style="background:'+pcaC.diffDel+';border:1px solid '+pcaC.diffDelBorder+';border-radius:6px;padding:8px 10px;max-height:250px;overflow-y:auto;font-size:11px;line-height:1.6;color:'+pcaC.diffDelText+';white-space:pre-wrap;word-break:break-all;">'+pcaEsc(leftContent)+'</div></div><div style="flex:1;min-width:0;"><div style="font-size:10px;color:'+pcaC.diffAddText+';margin-bottom:4px;font-weight:600;">▶ 右侧（新）</div><div style="background:'+pcaC.diffAdd+';border:1px solid '+pcaC.diffAddBorder+';border-radius:6px;padding:8px 10px;max-height:250px;overflow-y:auto;font-size:11px;line-height:1.6;color:'+pcaC.diffAddText+';white-space:pre-wrap;word-break:break-all;">'+pcaEsc(rightContent)+'</div></div></div></div>';
+    }
+    var html = '<div style="padding:8px;"><div style="color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;">\ud83d\udcdd 内容差异（<span style="color:'+pcaC.diffDelText+'">红色=删除</span> <span style="color:'+pcaC.diffAddText+'">绿色=新增</span>）：</div><div style="background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:8px 0;max-height:300px;overflow-y:auto;font-size:12px;line-height:1.7;font-family:Consolas,monospace;">';
+    diff.forEach(function(d){
+        var prefix,bg,color;
+        if(d.type==='add'){prefix='+';bg=pcaC.diffAdd;color=pcaC.diffAddText;}
+        else if(d.type==='del'){prefix='-';bg=pcaC.diffDel;color=pcaC.diffDelText;}
+        else{prefix=' ';bg='transparent';color=pcaC.dim;}
+        html+='<div style="background:'+bg+';padding:1px 10px;color:'+color+';white-space:pre-wrap;word-break:break-all;"><span style="display:inline-block;width:16px;opacity:0.6;user-select:none;">'+prefix+'</span>'+pcaEsc(d.text||' ')+'</div>';
+    });
+    html += '</div>';
+    var ac=0,dc=0; diff.forEach(function(d){if(d.type==='add')ac++;if(d.type==='del')dc++;});
+    html += '<div style="margin-top:6px;font-size:11px;color:'+pcaC.dim+';">';
+    if(ac)html+='<span style="color:'+pcaC.diffAddText+';">+'+ac+' 行新增</span> ';
+    if(dc)html+='<span style="color:'+pcaC.diffDelText+';">-'+dc+' 行删除</span>';
+    html += '</div></div>';
+    return html;
+}
+
+var pcaState = {
+    leftName:'', rightName:'',
+    leftEntries:[], rightEntries:[],
+    diffs:[], newItems:[],
+    rightPresetData:null,
+    leftPresetData:null,
+    originalValues:{},
+    activeTab:'diff', compared:false,
+    allPresets:null,
+    migrateSearch:'',
+    migrateSelected:{},
+    migrateNotes:[],
+    migrateFavActive:false,
+    migratePending:[],
+    migrateUndoStack:[],
+    migrateFilterStatus:'all',
+    migrateFilterDiff:'all',
+    migrateQueueExpanded:false,
+    migrateFavGroups:{},
+    activeFavGroupId:'',
+    confHelpExpanded:false,
+    editorClipText:'',
+    editorClipFrom:'',
+    editorState:null,
+    editorDrafts:{},
+    // 编辑器软换行开关：true = 自动换行（推荐，对手机和长行友好），false = 不换行（保留代码风格横向滚动）
+    editorWrap:(function(){try{var v=localStorage.getItem('pca_editor_wrap_v1');return v===null?true:v==='1';}catch(e){return true;}})(),
+    // ====== 条目编辑模块（单预设自改 / 反向迁移）======
+    editTarget:'right',          // 'left' | 'right'：当前要编辑哪个预设
+    editPending:[],              // 待修改队列：{ action: 'new' | 'overwrite' | 'delete' | 'reorder' | 'toggle', ... }
+    editUndoStack:[],
+    editSearch:'',
+    editOnlyNew:false,           // 仅显示「目标独有」的新条目（替代旧的"新增条目"标签）
+    editQueueExpanded:false,     // 待修改队列是否展开
+};
+
+var PCA_NOTES_KEY = 'pca_migrate_notes_v1';
+var PCA_EDITOR_WRAP_KEY = 'pca_editor_wrap_v1';
+function pcaLoadNotes() {
+    try { var s = localStorage.getItem(PCA_NOTES_KEY); if(s) pcaState.migrateNotes = JSON.parse(s); else pcaState.migrateNotes = []; } catch(e) { pcaState.migrateNotes = []; }
+}
+function pcaSaveNotes() {
+    try { localStorage.setItem(PCA_NOTES_KEY, JSON.stringify(pcaState.migrateNotes)); } catch(e) {}
+}
+
+function pcaInjectCSS() {
+    var doc = pcaGetDoc();
+    var old = doc.querySelector('#pca-style');
+    if (old) old.remove();
+    var s = doc.createElement('style');
+    s.id = 'pca-style';
+    // CSS 变量定义 — 让所有 .pca-* 样式自动跟随主题
+    var rootVars = ':root,#pca-root{'
+        + '--pca-bg:'+pcaC.bg+';'
+        + '--pca-surface:'+pcaC.surface+';'
+        + '--pca-surface-hi:'+pcaC.surfaceHi+';'
+        + '--pca-border:'+pcaC.border+';'
+        + '--pca-border-hi:'+pcaC.borderHi+';'
+        + '--pca-primary:'+pcaC.primary+';'
+        + '--pca-primary-dim:'+pcaC.primaryDim+';'
+        + '--pca-accent:'+pcaC.accent+';'
+        + '--pca-accent-dim:'+pcaC.accentDim+';'
+        + '--pca-text:'+pcaC.text+';'
+        + '--pca-text-dim:'+pcaC.textDim+';'
+        + '--pca-text-off:'+pcaC.textOff+';'
+        + '--pca-danger:'+pcaC.danger+';'
+        + '--pca-warning:'+pcaC.warning+';'
+        + '--pca-success:'+pcaC.success+';'
+        + '--pca-info:'+pcaC.info+';'
+        + '--pca-info-dim:'+pcaC.infoDim+';'
+        + '--pca-input:'+pcaC.input+';'
+        + '--pca-sheen:'+pcaC.sheen+';'
+        + '--pca-font-sans:'+pcaC._fontSans+';'
+        + '--pca-font-mono:'+pcaC._fontMono+';'
+        + '--pca-radius-sm:6px;--pca-radius-md:10px;--pca-radius-lg:14px;'
+        + '--pca-space-xs:4px;--pca-space-sm:8px;--pca-space-md:12px;--pca-space-lg:16px;--pca-space-xl:22px;'
+        + '--pca-shadow-sm:0 2px 8px rgba(0,0,0,0.35);'
+        + '--pca-shadow-md:0 4px 16px rgba(0,0,0,0.5);'
+        + '--pca-shadow-lg:0 8px 40px rgba(0,0,0,0.6);'
+        + '--pca-pop-w:min(420px,96vw);'
+        + '--pca-modal-w:min(520px,96vw);'
+        + '}';
+    s.textContent = rootVars + '\n' + [
+        'dialog.popup:has(#pca-root){background:transparent!important;border:none!important;box-shadow:none!important;padding:0!important;margin:auto!important;width:fit-content!important;min-width:0!important;max-width:96vw!important;height:fit-content!important;min-height:0!important;max-height:96vh!important;max-height:96dvh!important;overflow:visible!important;inset:0!important}',
+        'dialog.popup:has(#pca-root)::backdrop{background:rgba(0,0,0,0.65)!important}',
+        'dialog.popup:has(#pca-root) .popup-body{background:transparent!important;border:none!important;padding:0!important;margin:0!important;display:contents!important}',
+        'dialog.popup:has(#pca-root) .popup-content{background:transparent!important;padding:0!important;margin:0!important}',
+        'dialog.popup:has(#pca-root) .popup-controls{display:none!important}',
+        '#pca-root [data-pca-action]{cursor:pointer!important}',
+        '#pca-root [data-pca-action]:hover{opacity:0.85}',
+        // 让表单元素也继承主题字体
+        '#pca-root input,#pca-root select,#pca-root button,#pca-root textarea{font-family:inherit!important}',
+        // ====== Header 标题区（无毛玻璃，纯实色 + 底部一道暗红光带）======
+        '#pca-root .pca-header-bar{position:relative;background:'+pcaC.bg+'!important}',
+        '#pca-root .pca-header-bar::after{content:"";position:absolute;left:22px;right:22px;bottom:0;height:1px;background:linear-gradient(90deg,transparent 0%,'+pcaC.primaryDim+' 25%,'+pcaC.sheen+' 50%,'+pcaC.primaryDim+' 75%,transparent 100%);opacity:0.7;pointer-events:none}',
+        // ====== 标题字体（祭坛石碑：20px / 800 / 字间距）======
+        '#pca-root .pca-title{font-size:20px;font-weight:800;letter-spacing:1px;color:'+pcaC.text+';line-height:1.1;white-space:nowrap}',
+        '#pca-root .pca-subtitle{font-size:10px;font-weight:500;color:'+pcaC.textDim+';letter-spacing:1.5px;text-transform:uppercase;margin-top:3px;line-height:1}',
+        // 标题静态渐变（无动画，避免 background-clip:text 动画卡顿）
+        '#pca-root .pca-title-gradient{background:linear-gradient(90deg,'+pcaC.text+' 0%,'+pcaC.text+' 25%,'+pcaC.accent+' 50%,'+pcaC.text+' 75%,'+pcaC.text+' 100%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}',
+        // ====== Header 工具区按钮（无边框，hover 才出红色下划线）======
+        '#pca-root .pca-tool-link{display:inline-block;font-size:12px;color:'+pcaC.textDim+';padding:4px 6px;cursor:pointer;border:none;background:transparent;position:relative;line-height:1.2;transition:color .15s ease}',
+        '#pca-root .pca-tool-link::after{content:"";position:absolute;left:6px;right:6px;bottom:2px;height:1px;background:'+pcaC.primary+';transform:scaleX(0);transform-origin:center;transition:transform .15s ease}',
+        '#pca-root .pca-tool-link:hover{color:'+pcaC.accent+'}',
+        '#pca-root .pca-tool-link:hover::after{transform:scaleX(1)}',
+        '#pca-root .pca-tool-select{font-size:11px;color:'+pcaC.textDim+';background:transparent;padding:4px 6px;border:none;outline:none;cursor:pointer;letter-spacing:0.3px}',
+        '#pca-root .pca-tool-select:hover{color:'+pcaC.accent+'}',
+        // ====== 幽灵按钮（次要动作）— hover 磨砂玻璃浮起 ======
+        '#pca-root .pca-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;font-size:13px;font-weight:600;background:transparent;color:'+pcaC.textDim+';border:1px solid '+pcaC.border+';border-radius:3px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease,color .2s ease,background .2s ease,backdrop-filter .2s ease;white-space:nowrap;line-height:1.2;font-family:inherit;outline:none;-webkit-text-fill-color:'+pcaC.textDim+';letter-spacing:0.3px;will-change:transform}',
+        '#pca-root .pca-btn:hover{border-color:'+pcaC.accent+';color:'+pcaC.accent+';-webkit-text-fill-color:'+pcaC.accent+';background:rgba(255,255,255,0.05);backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);transform:translateY(-1px);box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.primary)+',0.18),0 0 0 1px rgba(255,255,255,0.04) inset}',
+        '#pca-root .pca-btn:active{transform:translateY(0);box-shadow:0 2px 6px rgba('+pcaHexToRgb(pcaC.primary)+',0.12)}',
+        '#pca-root .pca-btn-danger{color:'+pcaC.danger+';border-color:rgba('+pcaHexToRgb(pcaC.danger)+',0.4);-webkit-text-fill-color:'+pcaC.danger+'}',
+        '#pca-root .pca-btn-danger:hover{border-color:'+pcaC.danger+';color:'+pcaC.danger+';-webkit-text-fill-color:'+pcaC.danger+';background:rgba(255,255,255,0.05);backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);transform:translateY(-1px);box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.danger)+',0.22),0 0 0 1px rgba(255,255,255,0.04) inset}',
+        // ====== 输入控件（input/textarea/select）— hover/focus 磨砂玻璃浮起 ======
+        '#pca-root input,#pca-root textarea,#pca-root select{transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease,background .2s ease,backdrop-filter .2s ease;will-change:transform}',
+        '#pca-root input:hover,#pca-root textarea:hover,#pca-root select:hover{background:rgba(255,255,255,0.04)!important;backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);transform:translateY(-1px);box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.primary)+',0.15),0 0 0 1px rgba(255,255,255,0.04) inset;border-color:'+pcaC.borderHi+'!important}',
+        '#pca-root input:focus,#pca-root textarea:focus,#pca-root select:focus{background:rgba(255,255,255,0.05)!important;backdrop-filter:blur(10px) saturate(1.3);-webkit-backdrop-filter:blur(10px) saturate(1.3);transform:translateY(-1px);box-shadow:0 4px 14px rgba('+pcaHexToRgb(pcaC.primary)+',0.28),0 0 0 1px '+pcaC.primary+' inset;border-color:'+pcaC.primary+'!important;outline:none}',
+        // hover/focus 浮起兜底（系统减弱动效）
+        '@media (prefers-reduced-motion:reduce){',
+        '  #pca-root .pca-btn:hover,#pca-root .pca-btn-danger:hover,#pca-root input:hover,#pca-root input:focus,#pca-root textarea:hover,#pca-root textarea:focus,#pca-root select:hover,#pca-root select:focus{transform:none!important}',
+        '}',
+        // ====== 主操作按钮（暗血碑：透明底 + 红边 + hover 血液渗透从左到右）======
+        '#pca-root .pca-btn-primary{position:relative;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 22px;font-size:13px;font-weight:700;color:'+pcaC.accent+';background:transparent;border:1px solid '+pcaC.primary+';border-radius:2px;cursor:pointer;overflow:hidden;font-family:inherit;outline:none;-webkit-text-fill-color:'+pcaC.accent+';letter-spacing:0.5px;transition:color .25s ease,-webkit-text-fill-color .25s ease,border-color .25s ease;z-index:0}',
+        // ::before = 红色填充层，hover 时从左到右铺满
+        '#pca-root .pca-btn-primary::before{content:"";position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,'+pcaC.primaryDim+' 0%,'+pcaC.primary+' 100%);transition:width .35s ease;z-index:-1}',
+        '#pca-root .pca-btn-primary:hover{color:'+pcaC.text+';-webkit-text-fill-color:'+pcaC.text+';border-color:'+pcaC.accent+'}',
+        '#pca-root .pca-btn-primary:hover::before{width:100%}',
+        // ::after = 流光红横扫一道（hover 时触发，仅一次扫过）
+        '#pca-root .pca-btn-primary::after{content:"";position:absolute;inset:0;background:linear-gradient(120deg,transparent 35%,rgba('+pcaHexToRgb(pcaC.sheen)+',0.55) 50%,transparent 65%);transform:translateX(-100%);transition:transform .7s ease;pointer-events:none}',
+        '#pca-root .pca-btn-primary:hover::after{transform:translateX(100%)}',
+        // 主按钮常驻边框红光呼吸
+        '#pca-root .pca-btn-primary.pca-glow{box-shadow:0 0 0 1px rgba('+pcaHexToRgb(pcaC.primary)+',0.4),0 0 10px rgba('+pcaHexToRgb(pcaC.primary)+',0.18);animation:pcaGlowPulse 3.2s ease-in-out infinite}',
+        '@keyframes pcaGlowPulse{0%,100%{box-shadow:0 0 0 1px rgba('+pcaHexToRgb(pcaC.primary)+',0.35),0 0 6px rgba('+pcaHexToRgb(pcaC.primary)+',0.12)}50%{box-shadow:0 0 0 1px rgba('+pcaHexToRgb(pcaC.sheen)+',0.6),0 0 14px rgba('+pcaHexToRgb(pcaC.sheen)+',0.35)}}',
+        // ====== 标题：静态对角渐变（135°，左上→右下，淡淡过渡）======
+        '#pca-root .pca-title-shine{background:linear-gradient(135deg,'+pcaC.text+' 0%,'+pcaC.textDim+' 100%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;color:transparent}',
+        // ====== 条目悬停 — 左侧 2px 暗红色条带 ======
+        '#pca-root .pca-entry-card{position:relative;transition:background .15s ease}',
+        '#pca-root .pca-entry-card::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:0;background:'+pcaC.primary+';border-radius:2px;transition:width .15s ease;pointer-events:none;box-shadow:0 0 6px rgba('+pcaHexToRgb(pcaC.accent)+',0.4)}',
+        '#pca-root .pca-entry-card:hover::before{width:2px}',
+        '#pca-root .pca-entry-card:hover{background:rgba('+pcaHexToRgb(pcaC.primary)+',0.05)!important}',
+        // ====== 卡片层（无边框，靠 8px gap + 微底色提升）======
+        '#pca-root .pca-card{background:rgba(255,255,255,0.02);border-radius:4px;padding:10px 12px}',
+        // ====== 独立 overlay 按钮（不带 #pca-root 前缀，给挂在 body 上的对话框用）======
+        '.pca-modal-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 16px;font-size:13px;font-weight:600;background:transparent;color:'+pcaC.textDim+';border:1px solid '+pcaC.border+';border-radius:3px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease,color .2s ease,background .2s ease,backdrop-filter .2s ease;white-space:nowrap;line-height:1.2;font-family:inherit;outline:none;letter-spacing:0.3px;will-change:transform}',
+        '.pca-modal-btn:hover{border-color:'+pcaC.accent+';color:'+pcaC.accent+';background:rgba(255,255,255,0.05);backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);transform:translateY(-1px);box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.primary)+',0.18),0 0 0 1px rgba(255,255,255,0.04) inset}',
+        '.pca-modal-btn:active{transform:translateY(0);box-shadow:0 2px 6px rgba('+pcaHexToRgb(pcaC.primary)+',0.12)}',
+        '.pca-modal-btn-primary{position:relative;display:inline-flex;align-items:center;gap:6px;padding:7px 18px;font-size:13px;font-weight:700;background:transparent;color:'+pcaC.accent+';border:1px solid '+pcaC.primary+';border-radius:2px;cursor:pointer;overflow:hidden;letter-spacing:0.5px;line-height:1.2;font-family:inherit;outline:none;transition:color .25s ease,border-color .25s ease,box-shadow .25s ease;z-index:0;white-space:nowrap}',
+        '.pca-modal-btn-primary::before{content:"";position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,'+pcaC.primaryDim+' 0%,'+pcaC.primary+' 100%);transition:width .35s ease;z-index:-1}',
+        '.pca-modal-btn-primary:hover{color:'+pcaC.text+';border-color:'+pcaC.accent+';box-shadow:0 4px 14px rgba('+pcaHexToRgb(pcaC.primary)+',0.32)}',
+        '.pca-modal-btn-primary:hover::before{width:100%}',
+        '.pca-modal-btn-primary:active{transform:translateY(1px)}',
+        // ====== 给独立 overlay 内的 .pca-btn / .pca-btn-primary / .pca-btn-danger 兜底（无 #pca-root 前缀）======
+        '.pca-modal-overlay .pca-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;font-size:13px;font-weight:600;background:transparent;color:'+pcaC.textDim+';border:1px solid '+pcaC.border+';border-radius:3px;cursor:pointer;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease,color .2s ease,background .2s ease,backdrop-filter .2s ease;white-space:nowrap;line-height:1.2;font-family:inherit;outline:none;-webkit-text-fill-color:'+pcaC.textDim+';letter-spacing:0.3px;will-change:transform}',
+        '.pca-modal-overlay .pca-btn:hover{border-color:'+pcaC.accent+';color:'+pcaC.accent+';-webkit-text-fill-color:'+pcaC.accent+';background:rgba(255,255,255,0.05);backdrop-filter:blur(8px) saturate(1.2);-webkit-backdrop-filter:blur(8px) saturate(1.2);transform:translateY(-1px);box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.primary)+',0.18),0 0 0 1px rgba(255,255,255,0.04) inset}',
+        '.pca-modal-overlay .pca-btn:active{transform:translateY(0);box-shadow:0 2px 6px rgba('+pcaHexToRgb(pcaC.primary)+',0.12)}',
+        '.pca-modal-overlay .pca-btn-danger{color:'+pcaC.danger+';border-color:rgba('+pcaHexToRgb(pcaC.danger)+',0.4);-webkit-text-fill-color:'+pcaC.danger+'}',
+        '.pca-modal-overlay .pca-btn-danger:hover{border-color:'+pcaC.danger+';color:'+pcaC.danger+';-webkit-text-fill-color:'+pcaC.danger+';box-shadow:0 4px 12px rgba('+pcaHexToRgb(pcaC.danger)+',0.22),0 0 0 1px rgba(255,255,255,0.04) inset}',
+        '.pca-modal-overlay .pca-btn-primary{position:relative;display:inline-flex;align-items:center;gap:6px;padding:8px 22px;font-size:13px;font-weight:700;background:transparent;color:'+pcaC.accent+';border:1px solid '+pcaC.primary+';border-radius:2px;cursor:pointer;overflow:hidden;letter-spacing:0.5px;line-height:1.2;font-family:inherit;outline:none;transition:color .25s ease,border-color .25s ease,box-shadow .25s ease;z-index:0;white-space:nowrap}',
+        '.pca-modal-overlay .pca-btn-primary::before{content:"";position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,'+pcaC.primaryDim+' 0%,'+pcaC.primary+' 100%);transition:width .35s ease;z-index:-1}',
+        '.pca-modal-overlay .pca-btn-primary:hover{color:'+pcaC.text+';border-color:'+pcaC.accent+';box-shadow:0 4px 14px rgba('+pcaHexToRgb(pcaC.primary)+',0.32)}',
+        '.pca-modal-overlay .pca-btn-primary:hover::before{width:100%}',
+        '.pca-modal-overlay .pca-btn-primary:active{transform:translateY(1px)}',
+        // ====== 滑块开关（启用/禁用）======
+        '.pca-toggle{position:relative;display:inline-block;width:34px;height:18px;flex-shrink:0;cursor:pointer;vertical-align:middle}',
+        '.pca-toggle input{opacity:0;width:0;height:0;position:absolute}',
+        '.pca-toggle .pca-toggle-slider{position:absolute;inset:0;background:'+pcaC.surfaceHi+';border:1px solid '+pcaC.border+';border-radius:18px;transition:background .2s ease,border-color .2s ease}',
+        '.pca-toggle .pca-toggle-slider::before{content:"";position:absolute;left:2px;top:1px;width:12px;height:12px;background:'+pcaC.textDim+';border-radius:50%;transition:transform .2s ease,background .2s ease}',
+        '.pca-toggle input:checked + .pca-toggle-slider{background:rgba('+pcaHexToRgb(pcaC.primary)+',0.4);border-color:'+pcaC.primary+'}',
+        '.pca-toggle input:checked + .pca-toggle-slider::before{transform:translateX(16px);background:'+pcaC.accent+'}',
+        '.pca-toggle:hover .pca-toggle-slider{box-shadow:0 0 0 3px rgba('+pcaHexToRgb(pcaC.primary)+',0.12)}',
+        // ====== 减弱动效兜底 ======
+        '@media (prefers-reduced-motion:reduce){',
+        '  #pca-root .pca-btn-primary::before,#pca-root .pca-btn-primary::after,#pca-root .pca-btn-primary.pca-glow{animation:none!important;transition:none!important}',
+        '}',
+        '.pca-insert-line{transition:all 0.15s ease;cursor:pointer!important}',
+        '.pca-insert-line:hover{background:'+pcaC.migrateBg+'!important;border-color:'+pcaC.migrateBorder+'!important}',
+        '.pca-insert-line:hover .pca-insert-icon{color:'+pcaC.migrate+'!important;transform:scale(1.3)}',
+        '.pca-insert-line [data-pca-action]{cursor:pointer!important}',
+        '#pca-root .pca-entry-item{transition:background 0.1s}',
+        '#pca-root .pca-entry-item:hover{background:rgba(255,255,255,0.03)!important}',
+        '#pca-root .pca-search-input{background:'+pcaC.input+'!important;color:'+pcaC.text+'!important;border:1px solid '+pcaC.border+'!important;border-radius:6px!important;padding:6px 10px!important;font-size:12px!important;outline:none!important;width:100%!important}',
+        '#pca-root .pca-search-input:focus{border-color:'+pcaC.pink+'!important}',
+        '#pca-root .pca-search-input::placeholder{color:'+pcaC.dim+'!important}',
+        '#pca-root .pca-note-tag{display:inline-flex;align-items:center;gap:4px;background:'+pcaC.card2+';border:1px solid '+pcaC.border+';border-radius:16px;padding:3px 10px 3px 8px;font-size:12px;color:'+pcaC.text+';margin:3px;transition:all 0.15s;max-width:100%;overflow:hidden}',
+        '#pca-root .pca-note-tag:hover{border-color:'+pcaC.migrate+'}',
+        '#pca-root .pca-note-tag .pca-note-x{color:'+pcaC.dim+';cursor:pointer;font-size:14px;line-height:1;padding:0 2px;flex-shrink:0}',
+        '#pca-root .pca-note-tag .pca-note-x:hover{color:'+pcaC.danger+'}',
+        '#pca-root .pca-note-tag .pca-note-find{color:'+pcaC.migrate+';cursor:pointer;font-size:11px;flex-shrink:0}',
+        '#pca-root .pca-note-tag .pca-note-find:hover{color:'+pcaC.pink+'}',
+        '#pca-root .pca-note-tag .pca-note-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+        '.pca-modal-overlay{position:fixed!important;inset:0!important;z-index:2147483647!important;background:rgba(0,0,0,0.75)!important;display:flex!important;align-items:center!important;justify-content:center!important;padding:10px!important}',
+        '#pca-editor-overlay{cursor:default!important}',
+        '#pca-editor-overlay *{box-sizing:border-box}',
+        '#pca-editor-overlay textarea{background:'+pcaC.input+'!important;color:'+pcaC.text+'!important;border:1px solid '+pcaC.border+'!important;border-radius:6px!important;padding:10px 12px!important;font-size:14px!important;line-height:1.6!important;font-family:Consolas,Menlo,monospace!important;outline:none!important;resize:vertical!important;width:100%!important;box-sizing:border-box!important;-webkit-text-fill-color:'+pcaC.text+'!important;opacity:1!important}',
+        '#pca-editor-overlay textarea:focus{border-color:'+pcaC.migrate+'!important}',
+        '#pca-editor-overlay [data-pca-action]{cursor:pointer!important}',
+        '#pca-editor-overlay [data-pca-action]:hover{opacity:0.85}',
+        '#pca-editor-overlay button{cursor:pointer!important;font-family:inherit!important}',
+        '#pca-editor-overlay .pca-ed-btn{font-size:12px!important;padding:5px 10px!important;background:'+pcaC.card2+'!important;color:'+pcaC.text+'!important;border:1px solid '+pcaC.border+'!important;border-radius:5px!important;cursor:pointer!important;user-select:none!important;display:inline-block!important;line-height:1.4!important;-webkit-text-fill-color:'+pcaC.text+'!important}',
+        '#pca-editor-overlay .pca-ed-btn:hover{border-color:'+pcaC.migrate+'!important;color:'+pcaC.migrate+'!important;-webkit-text-fill-color:'+pcaC.migrate+'!important}',
+        '#pca-editor-overlay .pca-ed-tab{font-size:12px!important;padding:6px 12px!important;border-radius:6px 6px 0 0!important;cursor:pointer!important;user-select:none!important;border:1px solid '+pcaC.border+'!important;border-bottom:none!important;background:'+pcaC.card2+'!important;color:'+pcaC.dim+'!important;display:inline-block!important;-webkit-text-fill-color:'+pcaC.dim+'!important}',
+        '#pca-editor-overlay .pca-ed-tab.active{background:'+pcaC.input+'!important;color:'+pcaC.migrate+'!important;border-color:'+pcaC.migrateBorder+'!important;-webkit-text-fill-color:'+pcaC.migrate+'!important}',
+        '#pca-editor-overlay .pca-ed-diff-line{cursor:pointer!important;transition:filter 0.1s}',
+        '#pca-editor-overlay .pca-ed-diff-line:hover{filter:brightness(1.3)}',
+        '#pca-editor-overlay .pca-ed-diff-line:hover .pca-ed-copy-icon{opacity:1!important}',
+        // ====== 全设备响应式 ======
+        // 平板 / 小笔记本（≤900px）：内边距收紧
+        '@media(max-width:900px){',
+        '  #pca-root{font-size:13px}',
+        '  #pca-root .pca-pad-x{padding-left:14px!important;padding-right:14px!important}',
+        '}',
+        // 手机大屏（≤640px）— 用 dvh（动态视口高度）避开浏览器导航栏占位
+        '@media(max-width:640px){',
+        '  :root,#pca-root{--pca-space-xl:14px;--pca-space-lg:12px;--pca-space-md:10px}',
+        '  #pca-root{width:100vw!important;max-width:100vw!important;max-height:100vh!important;max-height:100dvh!important;border-radius:0!important}',
+        '  #pca-root .pca-entry-name-id{flex-direction:column!important;align-items:flex-start!important;gap:2px!important}',
+        '  #pca-root .pca-eid-tag{max-width:100%!important;overflow:hidden;text-overflow:ellipsis;font-size:9px!important}',
+        '  #pca-root .pca-entry-name{white-space:normal!important;word-break:break-word!important}',
+        '  #pca-root .pca-toolbar{flex-wrap:wrap!important;gap:6px!important}',
+        '  #pca-root .pca-toolbar > *{flex:0 0 auto!important}',
+        '  #pca-root .pca-tabs-bar{overflow-x:auto!important;overflow-y:hidden!important;flex-wrap:nowrap!important;-webkit-overflow-scrolling:touch}',
+        '  #pca-root .pca-tabs-bar > *{flex-shrink:0!important;padding:8px 12px!important;font-size:12px!important}',
+        '  #pca-root .pca-filter-row{gap:6px!important}',
+        '  #pca-root .pca-filter-row > *{font-size:11px!important;padding:3px 8px!important}',
+        '  #pca-root .pca-fav-tabs{overflow-x:auto;flex-wrap:nowrap!important;-webkit-overflow-scrolling:touch;padding-bottom:4px}',
+        '  #pca-root .pca-fav-tabs > *{flex-shrink:0!important}',
+        '  #pca-editor-overlay .pca-ed-modal{width:100vw!important;max-width:100vw!important;max-height:100vh!important;height:100vh!important;max-height:100dvh!important;height:100dvh!important;border-radius:0!important}',
+        '  #pca-editor-overlay textarea{font-size:13px!important}',
+        '  #pca-editor-overlay .pca-ed-toolbar{flex-wrap:wrap!important;gap:4px!important}',
+        '}',
+        // 极窄屏（≤414px，常见手机）：进一步紧凑
+        '@media(max-width:414px){',
+        '  #pca-root{font-size:12px}',
+        '  #pca-root h1,#pca-root h2,#pca-root h3{font-size:14px!important}',
+        '  #pca-root .pca-pad-x{padding-left:10px!important;padding-right:10px!important}',
+        '  #pca-root .pca-fav-tabs > *{font-size:10px!important;padding:2px 8px!important}',
+        '  #pca-root button,#pca-root .pca-btn{font-size:12px!important;padding:5px 10px!important}',
+        '  #pca-root select{font-size:12px!important;padding:6px 8px!important}',
+        '  #pca-root .pca-search-input{font-size:12px!important;padding:5px 8px!important}',
+        '}',
+        // 折叠屏极窄竖屏（≤320px）
+        '@media(max-width:320px){',
+        '  #pca-root .pca-pad-x{padding-left:8px!important;padding-right:8px!important}',
+        '  #pca-root .pca-tabs-bar > *{padding:6px 10px!important;font-size:11px!important}',
+        '}',
+    ].join('\n');
+    doc.head.appendChild(s);
+}
+
+function pcaSetupButton() {
+    var doc = pcaGetDoc();
+    var old = doc.querySelector('#pca-wand-btn'); if (old) old.remove();
+    var menu = doc.querySelector('#extensionsMenu');
+    if (!menu) { setTimeout(pcaSetupButton, 500); return; }
+    var btn = doc.createElement('div');
+    btn.id = 'pca-wand-btn';
+    btn.className = 'list-group-item flex-container flexGap5 interactable';
+    btn.tabIndex = 0;
+    btn.innerHTML = '<div class="fa-fw fa-solid fa-code-compare extensionsMenuExtensionButton"></div> ✧ 预设对比';
+    btn.style.cursor = 'pointer';
+    btn.addEventListener('click', function(){ pcaOpenPanel(); });
+    menu.appendChild(btn);
+}
+
+function pcaGetPresetNames() {
+    var items = [], doc = pcaGetDoc(), sel = null;
+    try { var ctx = SillyTavern.getContext(); var pm = ctx.getPresetManager(); if (pm && pm.select) sel = (pm.select.length !== undefined) ? pm.select[0] : pm.select; } catch(e) {}
+    if (!sel) sel = doc.querySelector('#settings_preset_openai');
+    if (sel && sel.options) { for (var i=0;i<sel.options.length;i++) { var v=(sel.options[i].value||'').trim(),t=(sel.options[i].text||sel.options[i].textContent||'').trim(); if(v||t) items.push({value:v,text:t}); } }
+    return items;
+}
+
+async function pcaFetchAllPresets() {
+    try {
+        var res = await fetch('/api/settings/get',{method:'POST',headers:pcaGetHeaders(),body:JSON.stringify({})});
+        if (!res.ok) throw new Error('HTTP '+res.status);
+        var data = await res.json();
+        if (!data.openai_settings||!data.openai_setting_names) throw new Error('无openai_settings');
+        var rawList = data.openai_settings, names = data.openai_setting_names, parsedList = [];
+        for (var i=0;i<rawList.length;i++) { var item=rawList[i]; if(typeof item==='string'){try{item=JSON.parse(item);}catch(e){parsedList.push(null);continue;}} parsedList.push(item); }
+        return {names:names,list:parsedList};
+    } catch(e) { pcaLog('获取失败:'+e.message); return null; }
+}
+
+function pcaFindPreset(all, name) {
+    if(!all) return null;
+    var idx=all.names.indexOf(name);
+    if(idx!==-1&&all.list[idx]) return JSON.parse(JSON.stringify(all.list[idx]));
+    var num=parseInt(name,10);
+    if(!isNaN(num)&&num>=0&&num<all.list.length&&all.list[num]) return JSON.parse(JSON.stringify(all.list[num]));
+    for(var i=0;i<all.names.length;i++){if(all.names[i].toLowerCase()===name.toLowerCase()) return JSON.parse(JSON.stringify(all.list[i]));}
+    return null;
+}
+
+function pcaGetOrder(po) {
+    if(!po)return[];
+    if(!Array.isArray(po)){if(typeof po==='object'){var ks=Object.keys(po);for(var i=0;i<ks.length;i++){if(Array.isArray(po[ks[i]]))return po[ks[i]];}}return[];}
+    if(!po.length)return[];
+    if(po[0]&&po[0].order&&Array.isArray(po[0].order))return po[0].order;
+    if(po[0]&&po[0].identifier!==undefined)return po;
+    return[];
+}
+
+function pcaExtract(preset) {
+    if(!preset)return[];
+    var prompts=preset.prompts||[],order=pcaGetOrder(preset.prompt_order);
+    var pMap={};prompts.forEach(function(p){if(p&&p.identifier)pMap[p.identifier]=p;});
+    var entries=[],seen={};
+    order.forEach(function(item){if(!item||!item.identifier)return;var p=pMap[item.identifier];entries.push({id:item.identifier,name:p?(p.name||item.identifier):item.identifier,enabled:!!item.enabled,content:p?(p.content||''):'',role:p?(p.role||''):'',marker:p?!!p.marker:false});seen[item.identifier]=true;});
+    prompts.forEach(function(p){if(p&&p.identifier&&!seen[p.identifier])entries.push({id:p.identifier,name:p.name||p.identifier,enabled:false,content:p.content||'',role:p.role||'',marker:!!p.marker});});
+    return entries;
+}
+
+function pcaCompare(left, right) {
+    var diffs=[],news=[];
+    var leftById={};left.forEach(function(e){leftById[e.id]=e;});
+    var leftByName={};left.forEach(function(e){if(!leftByName[e.name])leftByName[e.name]=[];leftByName[e.name].push(e);});
+    right.forEach(function(r){
+        var ml=leftById[r.id];
+        if(ml){if(ml.enabled!==r.enabled)diffs.push({left:ml,right:r});return;}
+        var nms=leftByName[r.name];
+        if(nms&&nms.length>0){nms.forEach(function(l){if(l.enabled!==r.enabled)diffs.push({left:l,right:r});});return;}
+        news.push({right:r});
+    });
+    return {diffs:diffs,newItems:news};
+}
+
+function pcaGetEnabled(preset,id){var order=pcaGetOrder(preset.prompt_order);for(var i=0;i<order.length;i++){if(order[i].identifier===id)return!!order[i].enabled;}return false;}
+function pcaSetEnabled(preset,id,val){var order=pcaGetOrder(preset.prompt_order);for(var i=0;i<order.length;i++){if(order[i].identifier===id){order[i].enabled=val;return;}}}
+
+async function pcaSavePresetToFile(preset, name) {
+    var saveData = {};
+    var keys = Object.keys(preset);
+    for (var k = 0; k < keys.length; k++) {
+        saveData[keys[k]] = preset[keys[k]];
+    }
+    saveData.preset_name = name;
+
+    pcaLog('保存数据字段数: ' + Object.keys(saveData).length + ' prompts: ' + (saveData.prompts?saveData.prompts.length:0));
+
+    // 优先用ST自己的savePreset方法
+    try {
+        var ctx = SillyTavern.getContext();
+        var pm = ctx.getPresetManager();
+        if (pm && typeof pm.savePreset === 'function') {
+            pcaLog('使用 pm.savePreset, apiId=' + pm.apiId);
+            await pm.savePreset(name, saveData, { skipUpdate: false });
+            pcaLog('✓ pm.savePreset 完成');
+            return true;
+        }
+    } catch(e) {
+        pcaLog('pm.savePreset 失败: ' + e.message + ', fallback to fetch');
+    }
+
+    // 备用：直接fetch
+    try {
+        var res = await fetch('/api/presets/save', {
+            method: 'POST',
+            headers: pcaGetHeaders(),
+            body: JSON.stringify({ preset: saveData, name: name, apiId: 'openai' })
+        });
+        if (res.ok) {
+            pcaLog('文件保存成功 via fetch status=' + res.status);
+            return true;
+        }
+        pcaLog('端点返回: ' + res.status + ' ' + res.statusText);
+    } catch(e) {
+        pcaLog('端点异常: ' + e.message);
+    }
+    return false;
+}
+
+function pcaGetPresetSelect() {
+    var doc = pcaGetDoc();
+    var sel = null;
+    try { var ctx = SillyTavern.getContext(); var pm = ctx.getPresetManager(); if (pm && pm.select) sel = (pm.select.length !== undefined) ? pm.select[0] : pm.select; } catch(e) {}
+    if (!sel) sel = doc.querySelector('#settings_preset_openai');
+    return sel;
+}
+
+function pcaIsCurrentPreset(name) {
+    var sel = pcaGetPresetSelect();
+    if (!sel || sel.selectedIndex < 0) return false;
+    var curName = (sel.options[sel.selectedIndex].text || '').trim();
+    return curName === name.trim();
+}
+
+function pcaForceRefreshPromptManagerUI() {
+    var doc = pcaGetDoc();
+    var $j = pcaGetJQ();
+    var sel = doc.querySelector('#settings_preset_openai');
+    if (!sel) return;
+    if ($j) {
+        try { $j(sel).trigger('change'); pcaLog('✓ 已触发 select change'); }
+        catch(e) { pcaLog('jQuery trigger 失败: ' + e.message); }
+    } else {
+        try { sel.dispatchEvent(new Event('change', { bubbles: true })); } catch(e) {}
+    }
+}
+
+async function pcaSyncAndSave(presetData, name) {
+    pcaLog('保存: "' + name + '" prompts=' + (presetData.prompts?presetData.prompts.length:0));
+    
+    // 安全检查：拒绝保存空数据
+    if (!presetData || !presetData.prompts || presetData.prompts.length === 0) {
+        pcaLog('❌ 拒绝保存：prompts为空');
+        toastr.error('数据异常，已阻止保存（防止清空预设）');
+        return false;
+    }
+    
+    // 只保存文件，不碰live对象，不调updatePreset
+    var saved = await pcaSavePresetToFile(presetData, name);
+    if (!saved) return false;
+    
+    pcaLog('✓ 文件已保存');
+    
+    // 如果是当前预设，提示用户切换刷新
+    if (pcaIsCurrentPreset(name)) {
+        toastr.success('保存成功！', '', {timeOut: 6000});
+    } else {
+        toastr.success('保存成功！');
+    }
+    return true;
+}
+
+// ========== 取当前迁移视图下"可见的左侧条目 id 列表" ==========
+function pcaGetVisibleLeftEntryIds() {
+    var leftEntries = pcaState.leftEntries || [];
+    var rightEntries = pcaExtract(pcaState.rightPresetData);
+    var rightById = {}, rightByName = {};
+    rightEntries.forEach(function(e) { rightById[e.id] = e; rightByName[e.name] = e; });
+    // 匹配优先级：name 优先（用户视角），id 兜底
+    var filterNames = (typeof pcaGetMigrateFilterNames === 'function') ? pcaGetMigrateFilterNames() : null;
+    var ids = [];
+    leftEntries.forEach(function(e) {
+        if (filterNames && typeof pcaMatchesFilter === 'function' && !pcaMatchesFilter(e.name, filterNames)) return;
+        var rightMatch = rightByName[e.name] || rightById[e.id] || null;
+        var exists = !!rightMatch;
+        var contentSame = rightMatch ? pcaContentEqual(e.content, rightMatch.content) : false;
+        if (pcaState.migrateFilterStatus === 'exists' && !exists) return;
+        if (pcaState.migrateFilterStatus === 'new' && exists) return;
+        if (pcaState.migrateFilterDiff === 'diff' && exists && contentSame) return;
+        if (pcaState.migrateFilterDiff === 'same' && (!exists || !contentSame)) return;
+        ids.push(e.id);
+    });
+    return ids;
+}
+
+// ========== 智能定位算法（双锚点） ==========
+// 给定旧版条目 srcEntry，返回它在新版应插入的位置
+// 返回: { insertIndex, insertAfterName, confidence: 'high'|'medium'|'low', warn: '...' }
+function pcaResolveSamePosition(srcEntry, leftEntries, rightEntries) {
+    var srcIdx = -1;
+    for (var i = 0; i < leftEntries.length; i++) {
+        if (leftEntries[i].id === srcEntry.id) { srcIdx = i; break; }
+    }
+    if (srcIdx < 0) {
+        return { insertIndex: rightEntries.length, insertAfterName: '', insertBeforeName: '', confidence: 'low', warn: '在旧版中找不到该条目，已追加到末尾' };
+    }
+
+    // 在右侧找到候选条目的位置（id 优先，name 兜底）
+    function findInRight(cand) {
+        for (var ri = 0; ri < rightEntries.length; ri++) {
+            if (rightEntries[ri].id === cand.id) return ri;
+        }
+        for (var rj = 0; rj < rightEntries.length; rj++) {
+            if (rightEntries[rj].name === cand.name) return rj;
+        }
+        return -1;
+    }
+
+    // 向上找最近共有前驱
+    var prevAnchor = null;
+    for (var pi = srcIdx - 1; pi >= 0; pi--) {
+        var rIdxP = findInRight(leftEntries[pi]);
+        if (rIdxP >= 0) { prevAnchor = { name: leftEntries[pi].name, rightIndex: rIdxP }; break; }
+    }
+    // 向下找最近共有后继
+    var nextAnchor = null;
+    for (var ni = srcIdx + 1; ni < leftEntries.length; ni++) {
+        var rIdxN = findInRight(leftEntries[ni]);
+        if (rIdxN >= 0) { nextAnchor = { name: leftEntries[ni].name, rightIndex: rIdxN }; break; }
+    }
+
+    if (prevAnchor && nextAnchor) {
+        if (prevAnchor.rightIndex < nextAnchor.rightIndex) {
+            return { insertIndex: prevAnchor.rightIndex + 1, insertAfterName: prevAnchor.name, insertBeforeName: nextAnchor.name, confidence: 'high', warn: '' };
+        }
+        return { insertIndex: prevAnchor.rightIndex + 1, insertAfterName: prevAnchor.name, insertBeforeName: '', confidence: 'medium', warn: '新版顺序与旧版不一致，按"' + prevAnchor.name + '"之后插入' };
+    }
+    if (prevAnchor) {
+        return { insertIndex: prevAnchor.rightIndex + 1, insertAfterName: prevAnchor.name, insertBeforeName: '', confidence: 'medium', warn: '' };
+    }
+    if (nextAnchor) {
+        // posLabel 已会显示"在 xx 前"，warn 留空避免重复信息
+        return { insertIndex: nextAnchor.rightIndex, insertAfterName: '', insertBeforeName: nextAnchor.name, confidence: 'medium', warn: '' };
+    }
+    if (srcIdx === 0) {
+        return { insertIndex: 0, insertAfterName: '', insertBeforeName: '', confidence: 'low', warn: '无共有邻居，已置于新版顶部' };
+    }
+    return { insertIndex: rightEntries.length, insertAfterName: '', insertBeforeName: '', confidence: 'low', warn: '无共有邻居，已追加到新版末尾' };
+}
+
+// ========== 收藏夹分组 ==========
+// 数据结构：pcaState.migrateFavGroups = { groupId: { id, name, color, notes:[name,...] } }
+// pcaState.migrateNotes 视为"未分组"（虚拟分组 id=''），向后兼容旧数据
+var PCA_FAV_GROUPS_KEY = 'pca_migrate_fav_groups_v1';
+var PCA_FAV_PALETTE = ['#d4a853','#8eb8e5','#6ecf8a','#e07090','#b08ee5','#e0a070','#5fb8c5','#cc6677'];
+
+function pcaLoadFavGroups() {
+    try { var s = localStorage.getItem(PCA_FAV_GROUPS_KEY); if (s) pcaState.migrateFavGroups = JSON.parse(s); } catch(e) {}
+    if (!pcaState.migrateFavGroups || typeof pcaState.migrateFavGroups !== 'object') pcaState.migrateFavGroups = {};
+}
+function pcaSaveFavGroups() {
+    try { localStorage.setItem(PCA_FAV_GROUPS_KEY, JSON.stringify(pcaState.migrateFavGroups || {})); } catch(e) {}
+}
+function pcaGenFavGroupId() {
+    return 'g' + Date.now().toString(36) + Math.floor(Math.random()*1000).toString(36);
+}
+// 生成新条目 ID（UUID v4 风格，跟 ST 的 identifier 兼容）
+function pcaGenEntryId() {
+    try {
+        if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
+            return crypto.randomUUID();
+        }
+    } catch(e) {}
+    // 兜底：手写 v4 UUID
+    var hex = '0123456789abcdef';
+    var s = '';
+    for (var i = 0; i < 36; i++) {
+        if (i === 8 || i === 13 || i === 18 || i === 23) { s += '-'; }
+        else if (i === 14) { s += '4'; }
+        else if (i === 19) { s += hex[(Math.random()*4|0) + 8]; }
+        else { s += hex[Math.random()*16|0]; }
+    }
+    return s;
+}
+function pcaCreateFavGroup(name, color) {
+    name = (name || '').trim();
+    if (!name) { toastr.warning('请输入分组名'); return null; }
+    pcaLoadFavGroups();
+    // 重名检查
+    var groups = pcaState.migrateFavGroups;
+    var keys = Object.keys(groups);
+    for (var i = 0; i < keys.length; i++) {
+        if (groups[keys[i]].name === name) { toastr.warning('已有同名分组：' + name); return keys[i]; }
+    }
+    var id = pcaGenFavGroupId();
+    var pickedColor = color || PCA_FAV_PALETTE[keys.length % PCA_FAV_PALETTE.length];
+    groups[id] = { id: id, name: name, color: pickedColor, notes: [] };
+    pcaSaveFavGroups();
+    return id;
+}
+function pcaRenameFavGroup(groupId, newName) {
+    pcaLoadFavGroups();
+    var g = pcaState.migrateFavGroups[groupId];
+    if (!g) return false;
+    newName = (newName || '').trim();
+    if (!newName) return false;
+    g.name = newName;
+    pcaSaveFavGroups();
+    return true;
+}
+function pcaSetFavGroupColor(groupId, color) {
+    pcaLoadFavGroups();
+    var g = pcaState.migrateFavGroups[groupId];
+    if (!g) return false;
+    g.color = color;
+    pcaSaveFavGroups();
+    return true;
+}
+function pcaDeleteFavGroup(groupId) {
+    pcaLoadFavGroups();
+    if (!pcaState.migrateFavGroups[groupId]) return false;
+    delete pcaState.migrateFavGroups[groupId];
+    pcaSaveFavGroups();
+    if (pcaState.activeFavGroupId === groupId) pcaState.activeFavGroupId = '';
+    return true;
+}
+// 把若干条目名加入指定分组（groupId='' 表示加入未分组）
+function pcaAddToFavGroup(entryNames, groupId) {
+    if (!entryNames || entryNames.length === 0) return 0;
+    var added = 0;
+    if (!groupId) {
+        // 未分组：写入 migrateNotes
+        if (!pcaState.migrateNotes) pcaState.migrateNotes = [];
+        entryNames.forEach(function(n) {
+            if (pcaState.migrateNotes.indexOf(n) < 0) { pcaState.migrateNotes.push(n); added++; }
+        });
+        pcaSaveNotes();
+        return added;
+    }
+    pcaLoadFavGroups();
+    var g = pcaState.migrateFavGroups[groupId];
+    if (!g) return 0;
+    if (!g.notes) g.notes = [];
+    entryNames.forEach(function(n) {
+        if (g.notes.indexOf(n) < 0) { g.notes.push(n); added++; }
+    });
+    pcaSaveFavGroups();
+    return added;
+}
+// 从指定分组移除某条目
+function pcaRemoveFromFavGroup(entryName, groupId) {
+    if (!groupId) {
+        if (!pcaState.migrateNotes) return false;
+        var idx = pcaState.migrateNotes.indexOf(entryName);
+        if (idx < 0) return false;
+        pcaState.migrateNotes.splice(idx, 1);
+        pcaSaveNotes();
+        return true;
+    }
+    pcaLoadFavGroups();
+    var g = pcaState.migrateFavGroups[groupId];
+    if (!g || !g.notes) return false;
+    var i = g.notes.indexOf(entryName);
+    if (i < 0) return false;
+    g.notes.splice(i, 1);
+    pcaSaveFavGroups();
+    return true;
+}
+function pcaListFavGroups() {
+    pcaLoadFavGroups();
+    return pcaState.migrateFavGroups || {};
+}
+// 取当前激活分组下的条目名数组（用于"显示全部收藏"过滤）
+function pcaGetActiveFavNames() {
+    var aid = pcaState.activeFavGroupId || '';
+    if (!aid) return (pcaState.migrateNotes || []).slice();
+    pcaLoadFavGroups();
+    var g = pcaState.migrateFavGroups[aid];
+    return (g && g.notes) ? g.notes.slice() : [];
+}
+// 取所有收藏（跨分组合并），用于"显示全部收藏"按钮
+function pcaGetAllFavNames() {
+    var all = (pcaState.migrateNotes || []).slice();
+    pcaLoadFavGroups();
+    var groups = pcaState.migrateFavGroups || {};
+    Object.keys(groups).forEach(function(gid) {
+        (groups[gid].notes || []).forEach(function(n) { if (all.indexOf(n) < 0) all.push(n); });
+    });
+    return all;
+}
+
+// 弹出"加入收藏夹分组"选择对话框（批量）
+function pcaRenderFavGroupPicker(entryNames, callback) {
+    if (!entryNames || entryNames.length === 0) { toastr.warning('请先选择条目'); return; }
+    pcaLoadFavGroups();
+    var doc = pcaGetDoc();
+    var existing = doc.querySelector('#pca-fav-picker-overlay');
+    if (existing) existing.remove();
+
+    var groups = pcaState.migrateFavGroups || {};
+    var groupIds = Object.keys(groups);
+
+    var html = '<div class="pca-modal-overlay" id="pca-fav-picker-overlay">';
+    html += '<div style="background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:min(480px,96vw);max-height:min(80vh,640px);max-height:min(80dvh,640px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);">';
+    html += '<div style="padding:14px 20px;border-bottom:1px solid '+pcaC.border+';flex-shrink:0;">';
+    html += '<div style="font-size:15px;font-weight:700;color:'+pcaC.gold+';margin-bottom:4px;">⭐ 加入收藏夹分组</div>';
+    html += '<div style="font-size:12px;color:'+pcaC.dim+';">已选 '+entryNames.length+' 项 · 选择目标分组</div>';
+    html += '</div>';
+    html += '<div style="flex:1;overflow-y:auto;padding:12px 16px;">';
+    // 未分组
+    var ungroupedCount = (pcaState.migrateNotes || []).length;
+    html += '<div data-pca-action="favp-pick" data-pca-gid="" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid '+pcaC.border+';border-radius:8px;margin-bottom:6px;background:'+pcaC.card+';cursor:pointer;">';
+    html += '<span style="width:14px;height:14px;border-radius:3px;background:'+pcaC.dim+';flex-shrink:0;"></span>';
+    html += '<span style="flex:1;font-size:13px;color:'+pcaC.text+';">📂 未分组</span>';
+    html += '<span style="font-size:11px;color:'+pcaC.dim+';">'+ungroupedCount+' 项</span>';
+    html += '</div>';
+    // 已有分组
+    groupIds.forEach(function(gid) {
+        var g = groups[gid];
+        html += '<div data-pca-action="favp-pick" data-pca-gid="'+pcaAttr(gid)+'" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid '+pcaC.border+';border-radius:8px;margin-bottom:6px;background:'+pcaC.card+';cursor:pointer;">';
+        html += '<span style="width:14px;height:14px;border-radius:3px;background:'+(g.color||pcaC.gold)+';flex-shrink:0;"></span>';
+        html += '<span style="flex:1;font-size:13px;color:'+pcaC.text+';">'+pcaEsc(g.name)+'</span>';
+        html += '<span style="font-size:11px;color:'+pcaC.dim+';">'+((g.notes||[]).length)+' 项</span>';
+        html += '</div>';
+    });
+    html += '<div style="border-top:1px dashed '+pcaC.border+';margin-top:12px;padding-top:12px;">';
+    html += '<div style="font-size:12px;color:'+pcaC.dim+';margin-bottom:6px;">或新建分组：</div>';
+    html += '<div style="display:flex;gap:6px;">';
+    html += '<input id="pca-favp-newname" placeholder="新分组名" style="flex:1;background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:6px 10px;color:'+pcaC.text+';font-size:12px;" />';
+    html += '<button data-pca-action="favp-new" class="pca-modal-btn-primary" style="padding:6px 14px;font-size:12px;">+ 新建并加入</button>';
+    html += '</div></div>';
+    html += '</div>';
+    html += '<div style="padding:10px 20px;border-top:1px solid '+pcaC.border+';display:flex;justify-content:flex-end;flex-shrink:0;">';
+    html += '<button data-pca-action="favp-cancel" class="pca-modal-btn">取消</button>';
+    html += '</div></div></div>';
+
+    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');
+    var wrap = doc.createElement('div'); wrap.innerHTML = html;
+    var overlayEl = wrap.firstChild;
+    if (existingDialog) existingDialog.appendChild(overlayEl); else doc.body.appendChild(overlayEl);
+
+    overlayEl.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var t = e.target;
+        while (t && t !== overlayEl) {
+            if (t.getAttribute && t.getAttribute('data-pca-action')) break;
+            t = t.parentElement;
+        }
+        if (!t || t === overlayEl) return;
+        var act = t.getAttribute('data-pca-action');
+        if (act === 'favp-cancel') { overlayEl.remove(); if (typeof callback === 'function') callback(null); return; }
+        if (act === 'favp-pick') {
+            var gid = t.getAttribute('data-pca-gid') || '';
+            var n = pcaAddToFavGroup(entryNames, gid);
+            overlayEl.remove();
+            var groupName = gid ? (pcaState.migrateFavGroups[gid] && pcaState.migrateFavGroups[gid].name) || '?' : '未分组';
+            toastr.success('已加入「'+groupName+'」：'+n+' 项' + (n < entryNames.length ? '（'+(entryNames.length-n)+' 项已存在）' : ''));
+            pcaState.migrateSelected = {};
+            if (typeof callback === 'function') callback(gid);
+            pcaRenderMigrate();
+            return;
+        }
+        if (act === 'favp-new') {
+            var inp = doc.querySelector('#pca-favp-newname');
+            var name = inp ? (inp.value || '').trim() : '';
+            if (!name) { toastr.warning('请输入分组名'); return; }
+            var newGid = pcaCreateFavGroup(name, null);
+            if (!newGid) return;
+            var added = pcaAddToFavGroup(entryNames, newGid);
+            overlayEl.remove();
+            toastr.success('已创建「'+name+'」并加入 '+added+' 项');
+            pcaState.migrateSelected = {};
+            if (typeof callback === 'function') callback(newGid);
+            pcaRenderMigrate();
+        }
+    });
+}
+
+// 弹出"管理分组"对话框（重命名/改色/删除）
+function pcaRenderFavGroupManager() {
+    pcaLoadFavGroups();
+    var doc = pcaGetDoc();
+    var existing = doc.querySelector('#pca-fav-mgr-overlay');
+    if (existing) existing.remove();
+
+    var groups = pcaState.migrateFavGroups || {};
+    var groupIds = Object.keys(groups);
+
+    var html = '<div class="pca-modal-overlay" id="pca-fav-mgr-overlay">';
+    html += '<div style="background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:min(520px,96vw);max-height:min(80vh,640px);max-height:min(80dvh,640px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);">';
+    html += '<div style="padding:14px 20px;border-bottom:1px solid '+pcaC.border+';flex-shrink:0;display:flex;align-items:center;justify-content:space-between;">';
+    html += '<span style="font-size:15px;font-weight:700;color:'+pcaC.gold+';">🗂 管理收藏夹分组</span>';
+    html += '<span data-pca-action="favm-close" style="cursor:pointer;color:'+pcaC.dim+';font-size:18px;padding:0 4px;">×</span>';
+    html += '</div>';
+    html += '<div style="flex:1;overflow-y:auto;padding:12px 16px;">';
+    if (groupIds.length === 0) {
+        html += '<div style="text-align:center;padding:24px;color:'+pcaC.dim+';font-size:12px;">还没有分组。在收藏夹卡片右上角点 ➕ 创建第一个分组。</div>';
+    } else {
+        groupIds.forEach(function(gid) {
+            var g = groups[gid];
+            html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid '+pcaC.border+';border-radius:8px;margin-bottom:6px;background:'+pcaC.card+';">';
+            html += '<span data-pca-action="favm-color" data-pca-gid="'+pcaAttr(gid)+'" title="点击换颜色" style="width:18px;height:18px;border-radius:4px;background:'+(g.color||pcaC.gold)+';cursor:pointer;flex-shrink:0;"></span>';
+            html += '<input data-pca-action="favm-rename" data-pca-gid="'+pcaAttr(gid)+'" value="'+pcaAttr(g.name)+'" style="flex:1;background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:4px 8px;color:'+pcaC.text+';font-size:12px;" />';
+            html += '<span style="font-size:11px;color:'+pcaC.dim+';white-space:nowrap;">'+((g.notes||[]).length)+' 项</span>';
+            html += '<span data-pca-action="favm-delete" data-pca-gid="'+pcaAttr(gid)+'" style="cursor:pointer;color:'+pcaC.danger+';font-size:14px;padding:0 6px;" title="删除分组">🗑</span>';
+            html += '</div>';
+        });
+    }
+    // 新建分组
+    html += '<div style="border-top:1px dashed '+pcaC.border+';margin-top:12px;padding-top:12px;display:flex;gap:6px;">';
+    html += '<input id="pca-favm-newname" placeholder="新分组名" style="flex:1;background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:6px 10px;color:'+pcaC.text+';font-size:12px;" />';
+    html += '<button data-pca-action="favm-create" class="pca-modal-btn-primary" style="padding:6px 14px;font-size:12px;">+ 新建</button>';
+    html += '</div>';
+    html += '</div></div></div>';
+
+    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');
+    var wrap = doc.createElement('div'); wrap.innerHTML = html;
+    var overlayEl = wrap.firstChild;
+    if (existingDialog) existingDialog.appendChild(overlayEl); else doc.body.appendChild(overlayEl);
+
+    // input 用 change 提交重命名
+    overlayEl.querySelectorAll('input[data-pca-action="favm-rename"]').forEach(function(inp) {
+        inp.addEventListener('change', function() {
+            var gid = inp.getAttribute('data-pca-gid');
+            if (pcaRenameFavGroup(gid, inp.value)) {
+                toastr.success('已重命名');
+                pcaRenderMigrate();
+            }
+        });
+    });
+
+    overlayEl.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var t = e.target;
+        while (t && t !== overlayEl) {
+            if (t.getAttribute && t.getAttribute('data-pca-action')) break;
+            t = t.parentElement;
+        }
+        if (!t || t === overlayEl) return;
+        var act = t.getAttribute('data-pca-action');
+        var gid = t.getAttribute('data-pca-gid');
+        if (act === 'favm-close') { overlayEl.remove(); return; }
+        if (act === 'favm-color') {
+            // 循环切换调色板
+            pcaLoadFavGroups();
+            var g = pcaState.migrateFavGroups[gid];
+            if (!g) return;
+            var curIdx = PCA_FAV_PALETTE.indexOf(g.color);
+            var next = PCA_FAV_PALETTE[(curIdx + 1) % PCA_FAV_PALETTE.length];
+            pcaSetFavGroupColor(gid, next);
+            t.style.background = next;
+            pcaRenderMigrate();
+            return;
+        }
+        if (act === 'favm-delete') {
+            pcaShowConfirm('删除分组「'+pcaEsc(pcaState.migrateFavGroups[gid].name)+'」？<br><br>分组下的收藏条目名将一并丢失（不影响实际预设条目）。', function(ok) {
+                if (!ok) return;
+                pcaDeleteFavGroup(gid);
+                overlayEl.remove();
+                pcaRenderFavGroupManager();
+                pcaRenderMigrate();
+                toastr.info('已删除分组');
+            }, { yesText:'删除', noText:'取消', yesColor:pcaC.danger, yesColorDim:'#a04050' });
+            return;
+        }
+        if (act === 'favm-create') {
+            var inp = doc.querySelector('#pca-favm-newname');
+            var name = inp ? (inp.value || '').trim() : '';
+            if (!name) { toastr.warning('请输入分组名'); return; }
+            var newGid = pcaCreateFavGroup(name, null);
+            if (newGid) {
+                overlayEl.remove();
+                pcaRenderFavGroupManager();
+                pcaRenderMigrate();
+            }
+        }
+    });
+}
+
+function pcaMigrateInsertEntry(targetPreset, sourceEntry, insertIndex) {
+    var prompts = targetPreset.prompts || [];
+    var order = pcaGetOrder(targetPreset.prompt_order);
+    // 健壮性：先从源预设找原始 prompt，把它的所有字段（包括 injection_position / depth / trigger 等未知字段）整体保留下来
+    var rawOriginal = null;
+    try {
+        var leftPreset = pcaState.leftPresetData;
+        if (leftPreset && Array.isArray(leftPreset.prompts) && sourceEntry._origId) {
+            for (var oi = 0; oi < leftPreset.prompts.length; oi++) {
+                if (leftPreset.prompts[oi] && leftPreset.prompts[oi].identifier === sourceEntry._origId) {
+                    rawOriginal = leftPreset.prompts[oi];
+                    break;
+                }
+            }
+        }
+        if (!rawOriginal && leftPreset && Array.isArray(leftPreset.prompts)) {
+            for (var oi2 = 0; oi2 < leftPreset.prompts.length; oi2++) {
+                var pp = leftPreset.prompts[oi2];
+                if (pp && (pp.identifier === sourceEntry.id || pp.name === sourceEntry.name)) {
+                    rawOriginal = pp;
+                    break;
+                }
+            }
+        }
+    } catch(_e) {}
+    var newPrompt;
+    if (rawOriginal) {
+        // 深拷贝原始 prompt（保留 injection_position / depth / trigger / system_prompt 等所有字段）
+        newPrompt = JSON.parse(JSON.stringify(rawOriginal));
+        // 用 sourceEntry 覆盖可编辑字段（id / name / content / role / marker / enabled 都可能被用户改过）
+        newPrompt.identifier = sourceEntry.id;
+        newPrompt.name = sourceEntry.name;
+        newPrompt.content = sourceEntry.content || '';
+        newPrompt.role = sourceEntry.role || newPrompt.role || 'system';
+        newPrompt.marker = !!(sourceEntry.marker || newPrompt.marker);
+        if (typeof sourceEntry.system_prompt === 'boolean') newPrompt.system_prompt = sourceEntry.system_prompt;
+    } else {
+        // 兜底：原始字段拿不到时按旧逻辑构造
+        newPrompt = {
+            identifier: sourceEntry.id,
+            name: sourceEntry.name,
+            content: sourceEntry.content || '',
+            role: sourceEntry.role || 'system',
+            marker: sourceEntry.marker || false,
+            system_prompt: sourceEntry.system_prompt || false,
+        };
+    }
+    // 应用字段编辑覆写（来自二级"字段"面板）
+    var fo = sourceEntry._fieldOverrides || null;
+    if (fo) {
+        if (typeof fo.identifier === 'string' && fo.identifier) newPrompt.identifier = fo.identifier;
+        if (typeof fo.name === 'string' && fo.name) newPrompt.name = fo.name;
+        if (typeof fo.role === 'string') newPrompt.role = fo.role;
+        if (typeof fo.injection_position === 'number') newPrompt.injection_position = fo.injection_position;
+        if (typeof fo.injection_depth === 'number') newPrompt.injection_depth = fo.injection_depth;
+        if (typeof fo.injection_order === 'number') newPrompt.injection_order = fo.injection_order;
+        if (Array.isArray(fo.injection_trigger)) {
+            newPrompt.injection_trigger = fo.injection_trigger.slice();
+        } else if (fo.injection_trigger === null && Object.prototype.hasOwnProperty.call(newPrompt, 'injection_trigger')) {
+            delete newPrompt.injection_trigger;
+        }
+        if (typeof fo.system_prompt === 'boolean') newPrompt.system_prompt = fo.system_prompt;
+        if (typeof fo.marker === 'boolean') newPrompt.marker = fo.marker;
+        if (typeof fo.forbid_overrides === 'boolean') newPrompt.forbid_overrides = fo.forbid_overrides;
+    }
+    prompts.push(newPrompt);
+    targetPreset.prompts = prompts;
+    // order 用最终 identifier（可能被字段覆写改过）
+    var finalIdentifier = newPrompt.identifier || sourceEntry.id;
+    var orderItem = { identifier: finalIdentifier, enabled: sourceEntry.enabled };
+    if (insertIndex < 0 || insertIndex >= order.length) { order.push(orderItem); }
+    else { order.splice(insertIndex, 0, orderItem); }
+}
+
+function pcaBuildHTML(presetNames) {
+    var opts = '<option value="">-- 请选择预设 --</option>';
+    presetNames.forEach(function(n){var dn=n.text||n.value;opts+='<option value="'+pcaAttr(dn)+'">'+pcaEsc(dn)+'</option>';});
+
+    var h = '<div id="pca-root" style="font-family:'+pcaC._fontSans+';color:'+pcaC.text+';width:min(880px,96vw);max-height:min(88vh,1000px);max-height:min(88dvh,1000px);background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;overflow:hidden;position:relative;">';
+    // ====== Header（祭坛石碑：标题大字 + v2.7 副标题下沉；无边框；底部红光带）======
+    h += '<div class="pca-pad-x pca-header-bar" style="padding:18px 22px 14px;display:flex;align-items:flex-start;justify-content:space-between;flex-shrink:0;gap:8px;flex-wrap:wrap;">';
+    h += '<div style="display:flex;flex-direction:column;align-items:flex-start;min-width:0;">';
+    h += '<span class="pca-title pca-title-shine">预设对比助手</span>';
+    h += '<span class="pca-subtitle">v 2 . 7</span>';
+    h += '</div>';
+    h += '<div class="pca-toolbar" style="display:flex;align-items:center;gap:14px;">';
+    // 主题切换（无边框）
+    var themeOpts = '';
+    Object.keys(pcaThemes).forEach(function(k){
+        var sel = (k === pcaC._themeName) ? ' selected' : '';
+        themeOpts += '<option value="'+pcaAttr(k)+'"'+sel+'>'+pcaEsc(pcaThemes[k].name)+'</option>';
+    });
+    h += '<select id="pca-theme-select" class="pca-tool-select" title="切换主题">'+themeOpts+'</select>';
+    h += '<span data-pca-action="debug-toggle" class="pca-tool-link" title="调试">调试</span>';
+    h += '<span data-pca-action="close" class="pca-tool-link" title="关闭" style="font-size:18px;line-height:1;">×</span>';
+    h += '</div></div>';
+
+    // ====== 选预设 + 主操作按钮 ======
+    h += '<div class="pca-pad-x pca-toolbar" style="padding:14px 22px;border-bottom:1px solid '+pcaC.border+';display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;flex-shrink:0;">';
+    h += '<div style="flex:1;min-width:140px;"><div style="font-size:11px;color:'+pcaC.textDim+';margin-bottom:5px;font-weight:600;letter-spacing:0.3px;text-transform:uppercase;">旧预设 · 源</div>';
+    h += '<select id="pca-sel-left" style="width:100%;padding:8px 10px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;font-size:13px;outline:none;">'+opts+'</select></div>';
+    h += '<div style="flex:1;min-width:140px;"><div style="font-size:11px;color:'+pcaC.textDim+';margin-bottom:5px;font-weight:600;letter-spacing:0.3px;text-transform:uppercase;">新预设 · 目标</div>';
+    h += '<select id="pca-sel-right" style="width:100%;padding:8px 10px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;font-size:13px;outline:none;">'+opts+'</select></div>';
+    h += '<button data-pca-action="compare" class="pca-btn-primary pca-glow">开始对比</button>';
+    h += '</div>';
+
+    h += '<div id="pca-debug-area" style="display:none;max-height:500px;flex-shrink:0;overflow-y:auto;padding:10px 22px;border-bottom:1px solid '+pcaC.border+';background:#0a0a0f;"><pre id="pca-debug-log" style="font-size:11px;color:#888;margin:0;white-space:pre-wrap;word-break:break-all;font-family:Consolas,monospace;"></pre></div>';
+
+    // ====== Tabs ======
+    h += '<div id="pca-tabs" class="pca-pad-x pca-tabs-bar" style="padding:0 22px;border-bottom:1px solid '+pcaC.border+';display:none;flex-shrink:0;">';
+    h += '<span data-pca-action="tab-diff" id="pca-tab-diff" style="display:inline-block;padding:10px 16px;font-size:13px;font-weight:600;border-bottom:2px solid '+pcaC.primary+';color:'+pcaC.primary+';">开关差异 (0)</span>';
+    h += '<span data-pca-action="tab-migrate" id="pca-tab-migrate" style="display:inline-block;padding:10px 16px;font-size:13px;font-weight:600;border-bottom:2px solid transparent;color:'+pcaC.textDim+';">条目迁移</span>';
+    h += '<span data-pca-action="tab-edit" id="pca-tab-edit" style="display:inline-block;padding:10px 16px;font-size:13px;font-weight:600;border-bottom:2px solid transparent;color:'+pcaC.textDim+';">条目编辑</span>';
+    h += '</div>';
+
+    h += '<div id="pca-content" class="pca-pad-x" style="flex:1;overflow-y:auto;padding:14px 22px;min-height:80px;">';
+    h += '<div style="text-align:center;padding:40px 0;color:'+pcaC.textDim+';font-size:14px;">请选择两个预设后点击「开始对比」</div></div>';
+
+    // ====== Footer ======
+    h += '<div id="pca-footer" class="pca-pad-x pca-toolbar" style="padding:12px 22px;border-top:1px solid '+pcaC.border+';display:none;justify-content:flex-end;gap:10px;flex-shrink:0;flex-wrap:wrap;">';
+    h += '<button data-pca-action="syncall" class="pca-btn" style="margin-right:auto;">全部同步 左→右</button>';
+    h += '<button data-pca-action="save" class="pca-btn">覆盖保存</button>';
+    h += '<button data-pca-action="saveas" class="pca-btn-primary pca-glow">另存为</button>';
+    h += '</div></div>';
+    return h;
+}
+
+function pcaRenderDiffs() {
+    var wrap = pcaQ('#pca-content'); if(!wrap)return;
+    if (!pcaState.diffs.length) { wrap.innerHTML='<div style="text-align:center;padding:30px;color:'+pcaC.success+';font-size:14px;">🎉 没有开关差异！</div>'; return; }
+    var html = '';
+    pcaState.diffs.forEach(function(d, i) {
+        var curRight = pcaGetEnabled(pcaState.rightPresetData, d.right.id);
+        var origRight = d.right.enabled;
+        var synced = (curRight === d.left.enabled);
+        var wasModified = (curRight !== origRight);
+        var hasDiff = pcaHasContentDiff(d.left.content, d.right.content);
+
+        html += '<div style="background:'+pcaC.card+';border:1px solid '+(synced?'rgba(110,207,138,0.3)':pcaC.border)+';border-radius:10px;padding:12px 16px;margin-bottom:10px;">';
+        html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;flex-wrap:wrap;">';
+        html += '<div class="pca-entry-name-id" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;">';
+        html += '<span class="pca-entry-name" style="font-size:14px;font-weight:600;color:'+pcaC.text+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex-shrink:1;" title="'+pcaAttr(d.right.name)+'">'+pcaEsc(d.right.name)+'</span>';
+        html += '<span class="pca-eid-tag" style="font-size:10px;color:'+pcaC.dim+';background:'+pcaC.card2+';padding:1px 6px;border-radius:3px;flex-shrink:0;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+pcaAttr(d.right.id)+'">'+pcaEsc(d.right.id)+'</span>';
+        html += '</div>';
+        html += '<div style="display:flex;gap:6px;flex-shrink:0;">';
+        if (synced) {
+            html += '<span style="font-size:11px;color:'+pcaC.success+';background:rgba(110,207,138,0.1);padding:3px 10px;border-radius:20px;">✓ 已同步</span>';
+            if (wasModified) html += '<span data-pca-action="revert" data-pca-idx="'+i+'" style="font-size:11px;color:'+pcaC.danger+';background:rgba(224,96,112,0.1);border:1px solid rgba(224,96,112,0.3);padding:3px 10px;border-radius:20px;">↩ 回退</span>';
+        } else {
+            html += '<span data-pca-action="sync" data-pca-idx="'+i+'" style="font-size:12px;color:'+pcaC.pink+';background:rgba(232,160,191,0.1);border:1px solid '+pcaC.pinkDim+';border-radius:6px;padding:4px 12px;">← 同步</span>';
+            if (wasModified) html += '<span data-pca-action="revert" data-pca-idx="'+i+'" style="font-size:11px;color:'+pcaC.danger+';background:rgba(224,96,112,0.1);border:1px solid rgba(224,96,112,0.3);padding:3px 10px;border-radius:20px;">↩ 回退</span>';
+        }
+        html += '</div></div>';
+
+        html += '<div style="display:flex;align-items:center;gap:16px;font-size:13px;flex-wrap:wrap;">';
+        html += '<div style="flex:1;min-width:120px;"><span style="color:'+pcaC.dim+';">左(旧)：</span><span style="color:'+(d.left.enabled?pcaC.pink:pcaC.off)+';font-weight:600;">'+(d.left.enabled?'● ON':'○ OFF')+'</span></div>';
+        html += '<div style="flex:1;min-width:120px;display:flex;align-items:center;gap:8px;">';
+        html += '<span style="color:'+pcaC.dim+';">右(新)：</span><span style="color:'+(curRight?pcaC.pink:pcaC.off)+';font-weight:600;">'+(curRight?'● ON':'○ OFF')+'</span>';
+        if (wasModified) html += '<span style="font-size:10px;color:'+pcaC.dim+';"> (原:' + (origRight?'ON':'OFF') + ')</span>';
+        html += '<span data-pca-action="toggle" data-pca-idx="'+i+'" style="font-size:11px;color:'+pcaC.dim+';background:'+pcaC.card2+';border:1px solid '+pcaC.border+';border-radius:4px;padding:2px 8px;">切换</span>';
+        html += '</div></div>';
+
+        html += '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">';
+        html += '<span data-pca-action="view" data-pca-idx="'+i+'" data-pca-side="left" style="font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:4px;padding:3px 10px;">👁 左侧内容</span>';
+        html += '<span data-pca-action="view" data-pca-idx="'+i+'" data-pca-side="right" style="font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:4px;padding:3px 10px;">👁 右侧内容</span>';
+        if (hasDiff) {
+            html += '<span data-pca-action="view" data-pca-idx="'+i+'" data-pca-side="diff" style="font-size:11px;color:'+pcaC.gold+';background:rgba(212,168,83,0.15);border:1px solid '+pcaC.goldDim+';border-radius:4px;padding:3px 10px;font-weight:600;">⚡ 差异对比</span>';
+        } else {
+            html += '<span style="font-size:11px;color:'+pcaC.off+';border:1px solid '+pcaC.off+';border-radius:4px;padding:3px 10px;cursor:default;opacity:0.5;">⚡ 差异对比</span>';
+        }
+        html += '</div>';
+        html += '<div id="pca-pv-'+i+'" style="display:none;margin-top:8px;"></div>';
+        html += '</div>';
+    });
+    wrap.innerHTML = html;
+}
+
+function pcaRenderNews() {
+    var wrap = pcaQ('#pca-content'); if(!wrap)return;
+    if (!pcaState.newItems.length) { wrap.innerHTML='<div style="text-align:center;padding:30px;color:'+pcaC.dim+';">没有新增条目</div>'; return; }
+    var html = '';
+    pcaState.newItems.forEach(function(item, i) {
+        var r = item.right;
+        var cur = pcaGetEnabled(pcaState.rightPresetData, r.id);
+        html += '<div style="background:'+pcaC.card+';border:1px solid '+pcaC.border+';border-radius:10px;padding:12px 16px;margin-bottom:10px;">';
+        html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:8px;flex-wrap:wrap;">';
+        html += '<div class="pca-entry-name-id" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;">';
+        html += '<span class="pca-entry-name" style="font-size:14px;font-weight:600;color:'+pcaC.gold+';min-width:0;flex-shrink:1;">★ '+pcaEsc(r.name)+'</span>';
+        html += '<span class="pca-eid-tag" style="font-size:10px;color:'+pcaC.dim+';background:'+pcaC.card2+';padding:1px 6px;border-radius:3px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+pcaAttr(r.id)+'">'+pcaEsc(r.id)+'</span>';
+        html += '</div>';
+        html += '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">';
+        html += '<span style="color:'+(cur?pcaC.pink:pcaC.off)+';font-weight:600;font-size:13px;">'+(cur?'● ON':'○ OFF')+'</span>';
+        html += '<span data-pca-action="toggle-new" data-pca-idx="'+i+'" style="font-size:11px;color:'+pcaC.dim+';background:'+pcaC.card2+';border:1px solid '+pcaC.border+';border-radius:4px;padding:2px 8px;">切换</span>';
+        html += '</div></div>';
+        html += '<span data-pca-action="view-new" data-pca-idx="'+i+'" style="font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:4px;padding:3px 10px;">👁 查看内容</span>';
+        html += '<div id="pca-pvn-'+i+'" style="display:none;margin-top:8px;"></div>';
+        html += '</div>';
+    });
+    wrap.innerHTML = html;
+}
+
+// ========== 条目编辑面板（自改 / 反向迁移 / 整合"新增条目"）==========
+// 取目标预设的当前条目数组（应用 editPending 中的 reorder/delete/new 后的状态）
+function pcaGetEditTargetEntries() {
+    var t = pcaState.editTarget;
+    var base = (t === 'left') ? pcaState.leftEntries : pcaState.rightEntries;
+    return base ? base.slice() : [];
+}
+function pcaGetEditOtherEntries() {
+    var t = pcaState.editTarget;
+    return (t === 'left') ? pcaState.rightEntries : pcaState.leftEntries;
+}
+function pcaGetEditTargetName() {
+    return (pcaState.editTarget === 'left') ? pcaState.leftName : pcaState.rightName;
+}
+function pcaGetEditTargetPreset() {
+    return (pcaState.editTarget === 'left') ? pcaState.leftPresetData : pcaState.rightPresetData;
+}
+
+// 跳到指定序号 + 高亮
+// kind: 'migrate' | 'edit'
+function pcaJumpToEntry(kind, n) {
+    var doc = pcaGetDoc();
+    var sel = (kind === 'migrate') ? '[data-pca-migrate-idx="'+n+'"]' : '[data-pca-edit-idx="'+n+'"]';
+    var el = doc.querySelector(sel);
+    if (!el) { toastr.warning('未找到第 '+n+' 项（可能被筛选隐藏）'); return; }
+    try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(_e) { el.scrollIntoView(); }
+    // 高亮 1.6s
+    var origBoxShadow = el.style.boxShadow;
+    var origBorder = el.style.borderColor;
+    el.style.boxShadow = '0 0 0 2px '+pcaC.gold+', 0 0 16px rgba('+pcaHexToRgb(pcaC.gold)+',0.4)';
+    el.style.borderColor = pcaC.gold;
+    setTimeout(function(){
+        el.style.boxShadow = origBoxShadow;
+        el.style.borderColor = origBorder;
+    }, 1600);
+}
+
+function pcaRenderEdit() {
+    var wrap = pcaQ('#pca-content'); if (!wrap) return;
+    if (!pcaState.compared) {
+        wrap.innerHTML = '<div style="text-align:center;padding:30px;color:'+pcaC.dim+';">请先对比预设</div>';
+        return;
+    }
+    var entries = pcaGetEditTargetEntries();
+    var other = pcaGetEditOtherEntries();
+    var otherByName = {}, otherById = {};
+    other.forEach(function(e){ otherByName[e.name] = e; otherById[e.id] = e; });
+
+    var html = '';
+    // 顶部控制栏：选择目标预设 + 搜索 + 仅显示新增
+    html += '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">';
+    html += '<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:'+pcaC.dim+';">编辑目标：</div>';
+    html += '<div style="display:inline-flex;border:1px solid '+pcaC.border+';border-radius:6px;overflow:hidden;">';
+    var leftActive = (pcaState.editTarget === 'left');
+    var rightActive = (pcaState.editTarget === 'right');
+    html += '<span data-pca-action="edit-target" data-pca-side="left" style="padding:5px 12px;font-size:12px;cursor:pointer;background:'+(leftActive?pcaC.gold:'transparent')+';color:'+(leftActive?'#fff':pcaC.dim)+';font-weight:'+(leftActive?'700':'500')+';">📁 旧（'+pcaEsc(pcaState.leftName||'?')+'）</span>';
+    html += '<span data-pca-action="edit-target" data-pca-side="right" style="padding:5px 12px;font-size:12px;cursor:pointer;background:'+(rightActive?pcaC.gold:'transparent')+';color:'+(rightActive?'#fff':pcaC.dim)+';font-weight:'+(rightActive?'700':'500')+';">📂 新（'+pcaEsc(pcaState.rightName||'?')+'）</span>';
+    html += '</div>';
+    html += '<div style="flex:1;min-width:140px;"><input id="pca-edit-search" class="pca-search-input" placeholder="🔍 按条目名搜索..." value="'+pcaAttr(pcaState.editSearch)+'" /></div>';
+    html += '<div style="display:flex;align-items:center;gap:4px;flex-shrink:0;"><span style="font-size:11px;color:'+pcaC.dim+';">跳到</span><input id="pca-edit-jump" type="number" min="1" max="'+entries.length+'" placeholder="#" style="width:70px;padding:5px 8px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:4px;font-size:12px;outline:none;text-align:center;" title="输入序号后回车，跳转并高亮条目" /></div>';
+    html += '<label style="display:flex;align-items:center;gap:4px;font-size:11px;color:'+pcaC.dim+';cursor:pointer;"><input type="checkbox" id="pca-edit-only-new"'+(pcaState.editOnlyNew?' checked':'')+' style="cursor:pointer;" /> 仅显示「目标独有」</label>';
+    html += '</div>';
+
+    // 操作栏：新建条目
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">';
+    html += '<button data-pca-action="edit-new-entry" class="pca-btn-primary" style="padding:5px 14px;font-size:12px;">＋ 新建空白条目</button>';
+    html += '<span style="font-size:11px;color:'+pcaC.dim+';align-self:center;">在「'+pcaEsc(pcaGetEditTargetName())+'」中创建一个新条目</span>';
+    html += '</div>';
+
+    // 条目列表
+    if (!entries.length) {
+        html += '<div style="text-align:center;padding:30px;color:'+pcaC.dim+';">没有条目</div>';
+    } else {
+        var search = (pcaState.editSearch || '').toLowerCase();
+        var totalCount = 0;
+        entries.forEach(function(entry, idx) {
+            if (search && entry.name.toLowerCase().indexOf(search) < 0) return;
+            // 是否是「目标独有」
+            var inOther = !!(otherByName[entry.name] || otherById[entry.id]);
+            if (pcaState.editOnlyNew && inOther) return;
+
+            // 找到此条目对应的 pending 项
+            var p = null;
+            for (var pi = 0; pi < pcaState.editPending.length; pi++) {
+                var pp = pcaState.editPending[pi];
+                if (pp.targetId === entry.id || pp.entryId === entry.id) { p = pp; break; }
+            }
+            // 状态条
+            var stTag = '';
+            if (p) {
+                if (p.action === 'overwrite') stTag = '<span style="font-size:10px;color:'+pcaC.gold+';background:rgba(212,168,83,0.1);border:1px solid rgba(212,168,83,0.3);padding:1px 8px;border-radius:10px;">待覆盖</span>';
+                else if (p.action === 'delete') stTag = '<span style="font-size:10px;color:'+pcaC.danger+';background:rgba(224,96,112,0.1);border:1px solid rgba(224,96,112,0.3);padding:1px 8px;border-radius:10px;">待删除</span>';
+                else if (p.action === 'reorder') stTag = '<span style="font-size:10px;color:'+pcaC.migrate+';background:'+pcaC.migrateBg+';border:1px solid '+pcaC.migrateBorder+';padding:1px 8px;border-radius:10px;">待移动→#'+(p.newIndex+1)+'</span>';
+                else if (p.action === 'toggle') stTag = '<span style="font-size:10px;color:'+pcaC.info+';background:rgba(255,255,255,0.04);border:1px solid '+pcaC.border+';padding:1px 8px;border-radius:10px;">待'+(p.enabled?'启用':'禁用')+'</span>';
+            } else if (!inOther) {
+                stTag = '<span style="font-size:10px;color:'+pcaC.success+';background:rgba(110,207,138,0.1);border:1px solid rgba(110,207,138,0.3);padding:1px 8px;border-radius:10px;">★ 目标独有</span>';
+            }
+
+            var cardBg = p ? (p.action === 'delete' ? 'rgba(224,96,112,0.05)' : pcaC.card) : pcaC.card;
+            html += '<div class="pca-entry-item" data-pca-edit-idx="'+(idx+1)+'" style="background:'+cardBg+';border:1px solid '+pcaC.border+';border-radius:8px;padding:10px 14px;margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;transition:box-shadow .25s ease,border-color .25s ease;">';
+            html += '<div style="flex:1;min-width:0;">';
+            html += '<div class="pca-entry-name-id" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">';
+            html += '<span style="font-size:10px;color:'+pcaC.dim+';min-width:24px;text-align:right;">#'+(idx+1)+'</span>';
+            // 滑块开关（点击触发 toggle；展示队列预览态）
+            var togglePreview = (p && p.action === 'toggle') ? !!p.enabled : !!entry.enabled;
+            html += '<span class="pca-toggle" data-pca-action="edit-toggle" data-pca-idx="'+idx+'" title="点击切换启用/禁用"><input type="checkbox"'+(togglePreview?' checked':'')+' tabindex="-1" /><span class="pca-toggle-slider"></span></span>';
+            html += '<span class="pca-entry-name" style="font-size:13px;font-weight:600;color:'+pcaC.text+';word-break:break-word;">'+pcaEsc(entry.name)+'</span>';
+            html += stTag;
+            html += '</div>';
+            html += '<div class="pca-eid-tag" style="font-size:10px;color:'+pcaC.dim+';background:'+pcaC.card2+';padding:1px 6px;border-radius:3px;margin-top:3px;display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+pcaAttr(entry.id)+'">'+pcaEsc(entry.id)+'</div>';
+            html += '</div>';
+            // 操作按钮组
+            html += '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;align-items:flex-end;">';
+            // 顺序输入框（直接跳到序号 N）
+            html += '<div style="display:flex;align-items:center;gap:3px;">';
+            html += '<button data-pca-action="edit-move" data-pca-idx="'+idx+'" data-pca-dir="up" class="pca-btn" style="padding:2px 8px;font-size:11px;" title="上移一位">↑</button>';
+            html += '<input type="number" min="1" max="'+entries.length+'" value="'+(idx+1)+'" style="width:50px;padding:2px 4px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:3px;font-size:11px;text-align:center;outline:none;" data-pca-edit-jump="'+idx+'" title="输入序号回车跳转" />';
+            html += '<button data-pca-action="edit-move" data-pca-idx="'+idx+'" data-pca-dir="down" class="pca-btn" style="padding:2px 8px;font-size:11px;" title="下移一位">↓</button>';
+            html += '</div>';
+            // 编辑 / 删除（启用切换已通过滑块开关在 name 左侧实现）
+            html += '<div style="display:flex;gap:4px;">';
+            html += '<button data-pca-action="edit-edit" data-pca-idx="'+idx+'" class="pca-btn" style="padding:3px 10px;font-size:11px;color:'+pcaC.gold+';border-color:'+pcaC.goldDim+';">✏️ 编辑</button>';
+            html += '<button data-pca-action="edit-delete" data-pca-idx="'+idx+'" class="pca-btn pca-btn-danger" style="padding:3px 10px;font-size:11px;">🗑 删</button>';
+            html += '</div>';
+            html += '</div>';
+            html += '</div>';
+            totalCount++;
+        });
+        if (totalCount === 0) {
+            html += '<div style="text-align:center;padding:20px;color:'+pcaC.dim+';">没有匹配的条目</div>';
+        }
+    }
+    // 底部留白防止队列 dock 遮挡（折叠时只留 52px，展开时留够）
+    html += '<div style="height:'+(pcaState.editQueueExpanded&&pcaState.editPending.length>0?'min(280px,45dvh)':'52px')+';flex-shrink:0;"></div>';
+    wrap.innerHTML = html;
+
+    // 搜索 / 筛选输入绑定
+    var searchInput = pcaGetDoc().querySelector('#pca-edit-search');
+    if (searchInput) {
+        searchInput.addEventListener('input', function() {
+            pcaState.editSearch = searchInput.value || '';
+            pcaRenderEdit();
+            // 保持焦点
+            var ne = pcaGetDoc().querySelector('#pca-edit-search');
+            if (ne) { ne.focus(); ne.setSelectionRange(ne.value.length, ne.value.length); }
+        });
+    }
+    var onlyNewCb = pcaGetDoc().querySelector('#pca-edit-only-new');
+    if (onlyNewCb) {
+        onlyNewCb.addEventListener('change', function() {
+            pcaState.editOnlyNew = onlyNewCb.checked;
+            pcaRenderEdit();
+        });
+    }
+    // 顶部「跳到 N」输入框
+    var jumpInput2 = pcaGetDoc().querySelector('#pca-edit-jump');
+    if (jumpInput2) {
+        jumpInput2.addEventListener('keydown', function(e) {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            var n = parseInt(this.value, 10);
+            if (!n || n < 1 || n > entries.length) { toastr.warning('请输入 1 ~ '+entries.length); return; }
+            pcaJumpToEntry('edit', n);
+        });
+    }
+    // 序号跳转输入框
+    var doc2 = pcaGetDoc();
+    doc2.querySelectorAll('input[data-pca-edit-jump]').forEach(function(inp) {
+        inp.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                var fromIdx = parseInt(inp.getAttribute('data-pca-edit-jump'), 10);
+                var toIdx = parseInt(inp.value, 10) - 1;
+                if (isNaN(toIdx) || toIdx < 0) { toastr.warning('请输入有效序号'); return; }
+                pcaEditMoveTo(fromIdx, toIdx);
+            }
+        });
+    });
+
+    // 渲染队列 dock
+    pcaRenderEditDock();
+}
+
+function pcaRenderEditDock() {
+    var doc = pcaGetDoc();
+    var root = doc.querySelector('#pca-root');
+    if (!root) return;
+    var existing = root.querySelector('#pca-edit-dock');
+    if (existing) existing.remove();
+    if (pcaState.activeTab !== 'edit') return;
+
+    var pendingCount = pcaState.editPending.length;
+    var expanded = pcaState.editQueueExpanded && pendingCount > 0;
+    var dock = doc.createElement('div');
+    dock.id = 'pca-edit-dock';
+    // 留出右侧 14px 不遮挡滚动条
+    dock.style.cssText = 'position:absolute;left:0;right:14px;bottom:0;background:'+pcaC.card2+';border-top:1px solid '+pcaC.goldDim+';box-shadow:0 -4px 16px rgba(0,0,0,0.4);z-index:10;max-height:'+(expanded?'min(280px,50dvh)':'44px')+';display:flex;flex-direction:column;transition:max-height 0.2s;';
+
+    var html = '';
+    // 顶栏（点击切换展开/收起）
+    html += '<div style="padding:10px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;user-select:none;">';
+    html += '<div data-pca-action="edit-queue-toggle" style="display:flex;align-items:center;gap:10px;cursor:pointer;flex:1;">';
+    html += '<span style="font-size:13px;font-weight:600;color:'+pcaC.gold+';">📝 待修改队列</span>';
+    if (pendingCount > 0) {
+        html += '<span style="background:'+pcaC.gold+';color:#fff;font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;">'+pendingCount+'</span>';
+    } else {
+        html += '<span style="font-size:11px;color:'+pcaC.dim+';">（队列为空）</span>';
+    }
+    html += '</div>';
+    html += '<div style="display:flex;align-items:center;gap:8px;">';
+    html += '<span style="font-size:11px;color:'+pcaC.dim+';">编辑「'+pcaEsc(pcaGetEditTargetName())+'」</span>';
+    if (pendingCount > 0) {
+        html += '<span data-pca-action="edit-queue-toggle" style="font-size:14px;color:'+pcaC.dim+';cursor:pointer;padding:0 4px;">'+(expanded?'▼':'▲')+'</span>';
+    }
+    html += '</div>';
+    html += '</div>';
+
+    if (expanded) {
+        html += '<div style="flex:1;overflow-y:auto;padding:0 18px 8px;">';
+        pcaState.editPending.forEach(function(p, pi) {
+            var label = '';
+            var color = pcaC.text;
+            if (p.action === 'new') { label = '＋ 新建'; color = pcaC.success; }
+            else if (p.action === 'overwrite') { label = '↻ 覆盖'; color = pcaC.gold; }
+            else if (p.action === 'delete') { label = '🗑 删除'; color = pcaC.danger; }
+            else if (p.action === 'reorder') { label = '↕ 移动 → #'+(p.newIndex+1); color = pcaC.migrate; }
+            else if (p.action === 'toggle') { label = (p.enabled?'▶ 启用':'⏸ 禁用'); color = pcaC.info; }
+            html += '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
+            html += '<span style="font-size:11px;color:'+color+';font-weight:600;flex-shrink:0;min-width:80px;">'+pcaEsc(label)+'</span>';
+            html += '<span style="font-size:12px;color:'+pcaC.text+';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+pcaEsc(p.entryName||p.targetName||'')+'</span>';
+            html += '<span data-pca-action="edit-pending-remove" data-pca-idx="'+pi+'" style="font-size:11px;color:'+pcaC.danger+';flex-shrink:0;cursor:pointer;padding:0 6px;">✕</span>';
+            html += '</div>';
+        });
+        html += '</div>';
+    }
+
+    if (expanded) {
+        html += '<div style="padding:8px 18px;border-top:1px solid '+pcaC.border+';display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0;">';
+        if (pcaState.editUndoStack.length > 0) {
+            html += '<button data-pca-action="edit-undo" class="pca-btn pca-btn-danger" style="padding:4px 10px;font-size:11px;">↩ 撤销</button>';
+        }
+        html += '<button data-pca-action="edit-clear" class="pca-btn" style="padding:4px 10px;font-size:11px;">清空</button>';
+        html += '<button data-pca-action="edit-apply" class="pca-btn-primary pca-glow" style="padding:5px 16px;font-size:12px;">应用并保存</button>';
+        html += '</div>';
+    }
+    dock.innerHTML = html;
+    root.appendChild(dock);
+}
+
+// 把同一个 entryId 的旧 pending 移除（避免重复）
+function pcaEditRemovePendingOf(entryId) {
+    pcaState.editPending = pcaState.editPending.filter(function(p) {
+        return p.entryId !== entryId && p.targetId !== entryId;
+    });
+}
+
+// 添加 / 替换队列项
+function pcaEditAddPending(p) {
+    pcaEditRemovePendingOf(p.entryId || p.targetId);
+    pcaState.editUndoStack.push({ action:'add', index: pcaState.editPending.length });
+    pcaState.editPending.push(p);
+}
+
+// 队列：切换启用
+function pcaEditDoToggle(idx) {
+    var entries = pcaGetEditTargetEntries();
+    if (idx < 0 || idx >= entries.length) return;
+    var entry = entries[idx];
+    pcaEditAddPending({ action:'toggle', targetId: entry.id, entryId: entry.id, entryName: entry.name, enabled: !entry.enabled });
+    pcaRenderEdit();
+    toastr.success('已加入队列：' + (!entry.enabled ? '启用' : '禁用') + ' ' + entry.name);
+}
+
+// 队列：删除
+function pcaEditDoDelete(idx) {
+    var entries = pcaGetEditTargetEntries();
+    if (idx < 0 || idx >= entries.length) return;
+    var entry = entries[idx];
+    pcaShowConfirm('确认从「'+pcaEsc(pcaGetEditTargetName())+'」中删除条目：<br><br><b>'+pcaEsc(entry.name)+'</b><br><br>（先入队列，应用后才真正删除）', function(ok){
+        if (!ok) return;
+        pcaEditAddPending({ action:'delete', targetId: entry.id, entryId: entry.id, entryName: entry.name });
+        pcaRenderEdit();
+        toastr.warning('已加入删除队列：' + entry.name);
+    }, { yesText:'加入删除队列', noText:'取消', yesColor: pcaC.danger, yesColorDim: '#a04050' });
+}
+
+// 队列：上下移位 / 跳转到指定序号
+function pcaEditMoveTo(fromIdx, toIdx) {
+    var entries = pcaGetEditTargetEntries();
+    if (fromIdx < 0 || fromIdx >= entries.length) return;
+    if (toIdx < 0) toIdx = 0;
+    if (toIdx >= entries.length) toIdx = entries.length - 1;
+    if (toIdx === fromIdx) return;
+    var entry = entries[fromIdx];
+    pcaEditAddPending({ action:'reorder', targetId: entry.id, entryId: entry.id, entryName: entry.name, fromIndex: fromIdx, newIndex: toIdx });
+    pcaRenderEdit();
+    toastr.info('已加入移动队列：' + entry.name + ' → 第 ' + (toIdx+1) + ' 位');
+}
+
+// 队列：新建空白条目
+function pcaEditDoNewEntry() {
+    var newId = pcaGenEntryId();
+    var newEntry = {
+        id: newId,
+        name: '新条目',
+        enabled: true,
+        content: '',
+        role: 'system',
+        marker: false,
+        _isNew: true,
+    };
+    pcaEditAddPending({
+        action:'new',
+        targetId: newId,
+        entryId: newId,
+        entryName: newEntry.name,
+        entry: newEntry,
+        insertIndex: pcaGetEditTargetEntries().length,
+    });
+    pcaRenderEdit();
+    pcaOpenEditor(newEntry, { isEditTarget: true });
+}
+
+// 队列：编辑（覆盖）
+function pcaEditDoEdit(idx) {
+    var entries = pcaGetEditTargetEntries();
+    if (idx < 0 || idx >= entries.length) return;
+    var entry = entries[idx];
+    // 复用 pcaOpenEditor — 但需要标记为 edit 模式（保存后入 edit 队列而不是 migrate 队列）
+    pcaOpenEditor(entry, { isEditTarget: true });
+}
+
+function pcaGetMigrateFilterNames() {
+    var names = [];
+    if (pcaState.migrateFavActive) {
+        var favNames = pcaGetActiveFavNames();
+        if (favNames && favNames.length > 0) names = favNames.slice();
+    }
+    if (pcaState.migrateSearch) {
+        names.push(pcaState.migrateSearch);
+    }
+    return names;
+}
+
+function pcaMatchesFilter(entryName, filterNames) {
+    if (!filterNames.length) return true;
+    var lower = entryName.toLowerCase();
+    for (var i = 0; i < filterNames.length; i++) {
+        if (lower.indexOf(filterNames[i].toLowerCase()) !== -1) return true;
+    }
+    return false;
+}
+
+var pcaComposing = false;
+
+function pcaContentEqual(a, b) {
+    return (a || '') === (b || '');
+}
+
+function pcaRenderMigrate() {
+    var wrap = pcaQ('#pca-content'); if(!wrap)return;
+    if (!pcaState.compared) {
+        wrap.innerHTML='<div style="text-align:center;padding:30px;color:'+pcaC.dim+';">请先对比预设</div>';
+        return;
+    }
+
+    var leftEntries = pcaState.leftEntries;
+    var rightEntries = pcaState.rightEntries;
+    var rightById = {};
+    var rightByName = {};
+    rightEntries.forEach(function(e) { rightById[e.id] = e; rightByName[e.name] = e; });
+
+    // 先确定每个左侧条目的状态（是否在右侧已存在 + 内容是否相同）
+    function getEntryStatus(entry) {
+        var pendingItem = null;
+        pcaState.migratePending.forEach(function(p) { if (p.entry.id === entry.id) pendingItem = p; });
+        // name 优先（用户视角）→ id 兜底
+        var rightMatch = rightByName[entry.name] || rightById[entry.id] || null;
+        var exists = !!rightMatch;
+        var contentSame = rightMatch ? pcaContentEqual(entry.content, rightMatch.content) : false;
+        return { pending: pendingItem, rightMatch: rightMatch, exists: exists, contentSame: contentSame };
+    }
+
+    var filterNames = pcaGetMigrateFilterNames();
+    var filteredLeft = leftEntries.filter(function(e) {
+        if (!pcaMatchesFilter(e.name, filterNames)) return false;
+        var st = getEntryStatus(e);
+        if (pcaState.migrateFilterStatus === 'exists' && !st.exists) return false;
+        if (pcaState.migrateFilterStatus === 'new' && st.exists) return false;
+        if (pcaState.migrateFilterDiff === 'diff') {
+            // 内容有差异：目标已有但内容不同；或者目标没有（也算差异）
+            if (st.exists && st.contentSame) return false;
+        }
+        if (pcaState.migrateFilterDiff === 'same') {
+            // 内容相同：必须目标已有且内容相同
+            if (!st.exists || !st.contentSame) return false;
+        }
+        return true;
+    });
+
+    var html = '';
+
+    // 收藏夹（含分组）
+    var favGroups = pcaState.migrateFavGroups || {};
+    var favGroupIds = Object.keys(favGroups);
+    var activeGid = pcaState.activeFavGroupId || '';
+    var activeGroup = activeGid ? favGroups[activeGid] : null;
+    var activeNotes = activeGid ? ((activeGroup && activeGroup.notes) || []) : (pcaState.migrateNotes || []);
+    var activeColor = activeGid ? ((activeGroup && activeGroup.color) || pcaC.gold) : pcaC.dim;
+    var activeName = activeGid ? ((activeGroup && activeGroup.name) || '?') : '未分组';
+
+    html += '<div style="background:'+pcaC.card+';border:1px solid '+pcaC.border+';border-radius:10px;padding:12px 16px;margin-bottom:14px;">';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px;">';
+    html += '<span style="font-size:13px;font-weight:600;color:'+pcaC.gold+';">⭐ 收藏夹</span>';
+    html += '<div style="display:flex;gap:8px;align-items:center;">';
+    var favBtnColor = pcaState.migrateFavActive ? pcaC.gold : pcaC.dim;
+    var favBtnBg = pcaState.migrateFavActive ? 'rgba(212,168,83,0.15)' : 'transparent';
+    html += '<span data-pca-action="fav-toggle-all" style="font-size:11px;color:'+favBtnColor+';background:'+favBtnBg+';border:1px solid '+(pcaState.migrateFavActive?pcaC.goldDim:pcaC.border)+';border-radius:6px;padding:3px 10px;cursor:pointer;">'+(pcaState.migrateFavActive?'✓ 已筛选收藏':'☆ 显示全部收藏')+'</span>';
+    html += '<span data-pca-action="fav-mgr-open" title="管理分组" style="font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;cursor:pointer;">🗂 管理分组</span>';
+    html += '</div></div>';
+
+    // 分组标签栏
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">';
+    var ungroupedActive = (activeGid === '');
+    html += '<span data-pca-action="fav-tab-pick" data-pca-gid="" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 10px;border-radius:12px;cursor:pointer;border:1px solid '+(ungroupedActive?pcaC.goldDim:pcaC.border)+';background:'+(ungroupedActive?'rgba(212,168,83,0.15)':'transparent')+';color:'+(ungroupedActive?pcaC.gold:pcaC.dim)+';">';
+    html += '<span style="width:8px;height:8px;border-radius:50%;background:'+pcaC.dim+';"></span>';
+    html += '📂 未分组 <span style="opacity:0.7;">('+(pcaState.migrateNotes||[]).length+')</span></span>';
+    favGroupIds.forEach(function(gid) {
+        var g = favGroups[gid];
+        var isAct = (activeGid === gid);
+        var col = g.color || pcaC.gold;
+        html += '<span data-pca-action="fav-tab-pick" data-pca-gid="'+pcaAttr(gid)+'" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 10px;border-radius:12px;cursor:pointer;border:1px solid '+(isAct?col:pcaC.border)+';background:'+(isAct?(col+'22'):'transparent')+';color:'+(isAct?col:pcaC.dim)+';">';
+        html += '<span style="width:8px;height:8px;border-radius:50%;background:'+col+';"></span>';
+        html += pcaEsc(g.name)+' <span style="opacity:0.7;">('+((g.notes||[]).length)+')</span></span>';
+    });
+    html += '<span data-pca-action="fav-mgr-open" title="新建分组" style="display:inline-flex;align-items:center;font-size:11px;padding:3px 10px;border-radius:12px;cursor:pointer;border:1px dashed '+pcaC.border+';color:'+pcaC.dim+';">➕ 新建</span>';
+    html += '</div>';
+
+    html += '<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">';
+    html += '<input id="pca-note-input" class="pca-search-input" style="flex:1;min-width:140px;" placeholder="输入条目名字加入「'+pcaEsc(activeName)+'」" />';
+    html += '<button data-pca-action="note-add" style="padding:5px 14px;background:'+(activeGid?activeColor:pcaC.migrate)+';color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer;">+ 添加到本组</button>';
+    html += '</div>';
+    html += '<div id="pca-notes-list" style="display:flex;flex-wrap:wrap;min-height:24px;">';
+    if (activeNotes.length === 0) {
+        html += '<span style="color:'+pcaC.dim+';font-size:12px;padding:4px;">「'+pcaEsc(activeName)+'」暂无收藏</span>';
+    } else {
+        activeNotes.forEach(function(note, ni) {
+            html += '<span class="pca-note-tag" style="border-color:'+activeColor+'55;">';
+            html += '<span class="pca-note-find" data-pca-action="note-find" data-pca-idx="'+ni+'" title="单独搜索此条目">🔍</span> ';
+            html += '<span class="pca-note-text">'+pcaEsc(note)+'</span>';
+            html += ' <span class="pca-note-x" data-pca-action="note-del" data-pca-idx="'+ni+'" title="从本组移除">×</span>';
+            html += '</span>';
+        });
+    }
+    html += '</div></div>';
+
+    // 搜索 + 序号跳转 + 筛选
+    html += '<div style="display:flex;gap:10px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">';
+    html += '<div style="flex:1;min-width:140px;"><input id="pca-migrate-search" class="pca-search-input" placeholder="🔍 按条目名字搜索..." value="'+pcaAttr(pcaState.migrateSearch)+'" /></div>';
+    html += '<div style="display:flex;align-items:center;gap:4px;flex-shrink:0;"><span style="font-size:11px;color:'+pcaC.dim+';">跳到</span><input id="pca-migrate-jump" type="number" min="1" max="'+leftEntries.length+'" placeholder="#" style="width:70px;padding:5px 8px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:4px;font-size:12px;outline:none;text-align:center;" title="输入序号后回车，跳转并高亮条目" /></div>';
+    html += '<span style="font-size:12px;color:'+pcaC.dim+';white-space:nowrap;">'+filteredLeft.length+' / '+leftEntries.length+' 条</span>';
+    if (pcaState.migrateSearch || pcaState.migrateFavActive || pcaState.migrateFilterStatus!=='all' || pcaState.migrateFilterDiff!=='all') {
+        html += '<span data-pca-action="migrate-clear-filter" style="font-size:11px;color:'+pcaC.danger+';border:1px solid rgba(224,96,112,0.3);border-radius:6px;padding:3px 10px;white-space:nowrap;">✕ 清除筛选</span>';
+    }
+    html += '</div>';
+
+    // 状态筛选 + 差异筛选 按钮组
+    function btnStyle(active, color) {
+        if (active) return 'background:'+(color==='gold'?'rgba(212,168,83,0.15)':'rgba(142,184,229,0.15)')+';color:'+(color==='gold'?pcaC.gold:pcaC.migrate)+';border:1px solid '+(color==='gold'?pcaC.goldDim:pcaC.migrateBorder)+';';
+        return 'background:transparent;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';';
+    }
+    html += '<div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">';
+    html += '<span style="font-size:11px;color:'+pcaC.dim+';margin-right:4px;">状态:</span>';
+    html += '<span data-pca-action="filter-status" data-pca-val="all" style="font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterStatus==='all','migrate')+'">全部</span>';
+    html += '<span data-pca-action="filter-status" data-pca-val="new" style="font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterStatus==='new','migrate')+'">仅目标未有</span>';
+    html += '<span data-pca-action="filter-status" data-pca-val="exists" style="font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterStatus==='exists','migrate')+'">仅目标已有</span>';
+    html += '<span style="font-size:11px;color:'+pcaC.dim+';margin:0 4px 0 10px;">内容:</span>';
+    html += '<span data-pca-action="filter-diff" data-pca-val="all" style="font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterDiff==='all','gold')+'">全部</span>';
+    html += '<span data-pca-action="filter-diff" data-pca-val="diff" style="font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterDiff==='diff','gold')+'">仅有差异</span>';
+    html += '<span data-pca-action="filter-diff" data-pca-val="same" style="font-size:11px;border-radius:6px;padding:3px 10px;'+btnStyle(pcaState.migrateFilterDiff==='same','gold')+'">仅相同</span>';
+    html += '</div>';
+
+    html += '<div style="font-size:13px;font-weight:600;color:'+pcaC.pink+';margin-bottom:8px;">📁 旧预设「'+pcaEsc(pcaState.leftName)+'」条目</div>';
+
+    // 批量操作栏
+    var selectedCount = 0;
+    if (pcaState.migrateSelected) {
+        Object.keys(pcaState.migrateSelected).forEach(function(k) { if (pcaState.migrateSelected[k]) selectedCount++; });
+    }
+    var hasSelection = selectedCount > 0;
+    html += '<div style="background:'+pcaC.card2+';border:1px solid '+pcaC.border+';border-radius:8px;padding:8px 12px;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">';
+    html += '<span style="font-size:11px;color:'+pcaC.dim+';margin-right:4px;">批量:</span>';
+    html += '<span data-pca-action="batch-select-all" style="font-size:11px;color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;">☑ 全选可见</span>';
+    html += '<span data-pca-action="batch-invert" style="font-size:11px;color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;">⇅ 反选</span>';
+    html += '<span data-pca-action="batch-clear" style="font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;">✕ 清空选择</span>';
+    if (hasSelection) {
+        html += '<span style="flex:1;font-size:11px;color:'+pcaC.migrate+';font-weight:600;text-align:right;min-width:70px;">已选 '+selectedCount+' 项</span>';
+        html += '<button data-pca-action="batch-migrate" class="pca-btn-primary" style="padding:5px 14px;font-size:12px;">✨ 一键智能迁移已选</button>';
+        html += '<button data-pca-action="batch-fav" class="pca-btn" style="padding:4px 10px;font-size:11px;" title="加入收藏夹（分组功能开发中）">⭐ 加入收藏</button>';
+    } else {
+        html += '<span style="flex:1;font-size:11px;color:'+pcaC.dim+';text-align:right;min-width:70px;">勾选条目后批量操作</span>';
+    }
+    html += '</div>';
+
+    if (filteredLeft.length === 0) {
+        html += '<div style="text-align:center;padding:20px;color:'+pcaC.dim+';">没有匹配的条目</div>';
+    } else {
+        filteredLeft.forEach(function(entry) {
+            var origIdx = -1;
+            for (var oi = 0; oi < leftEntries.length; oi++) { if (leftEntries[oi] === entry) { origIdx = oi; break; } }
+
+            var st = getEntryStatus(entry);
+            var alreadyPending = !!st.pending;
+
+            var statusBadge = '';
+            if (alreadyPending) {
+                statusBadge = '<span style="font-size:10px;color:'+pcaC.migrate+';background:'+pcaC.migrateBg+';border:1px solid '+pcaC.migrateBorder+';padding:1px 8px;border-radius:10px;">已在队列</span>';
+            } else if (st.exists) {
+                if (st.contentSame) {
+                    statusBadge = '<span style="font-size:10px;color:'+pcaC.success+';background:rgba(110,207,138,0.1);border:1px solid rgba(110,207,138,0.3);padding:1px 8px;border-radius:10px;">目标已有·内容相同</span>';
+                } else {
+                    statusBadge = '<span style="font-size:10px;color:'+pcaC.gold+';background:rgba(212,168,83,0.1);border:1px solid rgba(212,168,83,0.3);padding:1px 8px;border-radius:10px;">目标已有·内容不同</span>';
+                }
+            } else {
+                statusBadge = '<span style="font-size:10px;color:'+pcaC.dim+';background:'+pcaC.card2+';border:1px solid '+pcaC.border+';padding:1px 8px;border-radius:10px;">目标未有</span>';
+            }
+
+            var isSelected = !!(pcaState.migrateSelected && pcaState.migrateSelected[entry.id]);
+            var selBorder = isSelected ? pcaC.migrateBorder : pcaC.border;
+            var selBg = isSelected ? 'rgba(142,184,229,0.06)' : pcaC.card;
+            html += '<div class="pca-entry-item" data-pca-migrate-idx="'+(origIdx+1)+'" style="background:'+selBg+';border:1px solid '+selBorder+';border-radius:8px;padding:10px 14px;margin-bottom:6px;transition:box-shadow .25s ease,border-color .25s ease;">';
+            html += '<div style="display:flex;align-items:center;gap:10px;">';
+            // 复选框（旧版条目唯一标识用 entry.id）
+            html += '<span data-pca-action="batch-toggle" data-pca-entry-id="'+pcaAttr(entry.id)+'" style="flex-shrink:0;font-size:16px;color:'+(isSelected?pcaC.migrate:pcaC.dim)+';padding:2px 4px;user-select:none;" title="选中以批量操作">'+(isSelected?'☑':'☐')+'</span>';
+            html += '<span style="font-size:10px;color:'+pcaC.dim+';flex-shrink:0;min-width:28px;text-align:right;">#'+(origIdx+1)+'</span>';
+            html += '<div style="flex:1;min-width:0;">';
+            html += '<div class="pca-entry-name-id" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
+            html += '<span class="pca-entry-name" style="font-size:13px;font-weight:600;color:'+pcaC.text+';word-break:break-word;">'+pcaEsc(entry.name)+'</span>';
+            html += '<span style="color:'+(entry.enabled?pcaC.pink:pcaC.off)+';font-size:11px;flex-shrink:0;">'+(entry.enabled?'ON':'OFF')+'</span>';
+            html += statusBadge;
+            html += '</div>';
+            html += '<div class="pca-eid-tag" style="font-size:10px;color:'+pcaC.dim+';background:'+pcaC.card2+';padding:1px 6px;border-radius:3px;margin-top:3px;display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+pcaAttr(entry.id)+'">'+pcaEsc(entry.id)+'</div>';
+            html += '</div>';
+
+            if (!alreadyPending) {
+                html += '<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;align-self:center;">';
+                html += '<button data-pca-action="migrate-add" data-pca-idx="'+origIdx+'" class="pca-btn-primary" style="padding:4px 12px;font-size:11px;">📦 迁移</button>';
+                // 目标已有同名条目时多一个「复制为新条目」入口（生成新 ID，作为独立条目入队列）
+                if (st.exists) {
+                    html += '<button data-pca-action="migrate-add-as-new" data-pca-idx="'+origIdx+'" class="pca-btn" style="padding:4px 10px;font-size:11px;color:'+pcaC.success+';border-color:rgba(110,207,138,0.3);" title="保留目标已有那条，再新增一份此条目（生成新 ID）">🆕 复制为新条目</button>';
+                }
+                html += '<button data-pca-action="migrate-edit" data-pca-idx="'+origIdx+'" class="pca-btn" style="padding:4px 10px;font-size:11px;">✏️ 编辑后迁移</button>';
+                html += '</div>';
+            }
+
+            html += '</div>';
+            html += '<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">';
+            html += '<span data-pca-action="migrate-preview" data-pca-idx="'+origIdx+'" style="font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:4px;padding:2px 8px;">👁 预览</span>';
+            if (st.exists && !st.contentSame) {
+                html += '<span data-pca-action="migrate-diff" data-pca-idx="'+origIdx+'" style="font-size:11px;color:'+pcaC.gold+';background:rgba(212,168,83,0.1);border:1px solid '+pcaC.goldDim+';border-radius:4px;padding:2px 8px;">⚡ 差异对比</span>';
+            }
+            html += '</div>';
+            html += '<div id="pca-mpv-'+origIdx+'" style="display:none;margin-top:6px;"></div>';
+            html += '</div>';
+        });
+    }
+
+    // 底部留白，避免被悬浮队列遮挡（手机端用 dvh 兜底，避免占用过多可视区）
+    html += '<div style="height:'+(pcaState.migrateQueueExpanded?'min(280px,45dvh)':'52px')+';flex-shrink:0;"></div>';
+
+    wrap.innerHTML = html;
+
+    var searchInput = pcaGetDoc().querySelector('#pca-migrate-search');
+    if (searchInput) {
+        searchInput.addEventListener('compositionstart', function() { pcaComposing = true; });
+        searchInput.addEventListener('compositionend', function() {
+            pcaComposing = false;
+            pcaState.migrateSearch = this.value;
+            pcaRenderMigrate();
+        });
+        searchInput.addEventListener('input', function() {
+            if (pcaComposing) return;
+            pcaState.migrateSearch = this.value;
+            pcaRenderMigrate();
+        });
+    }
+    var jumpInput = pcaGetDoc().querySelector('#pca-migrate-jump');
+    if (jumpInput) {
+        jumpInput.addEventListener('keydown', function(e) {
+            if (e.key !== 'Enter') return;
+            e.preventDefault();
+            var n = parseInt(this.value, 10);
+            if (!n || n < 1 || n > leftEntries.length) { toastr.warning('请输入 1 ~ '+leftEntries.length); return; }
+            pcaJumpToEntry('migrate', n);
+        });
+    }
+    var noteInput = pcaGetDoc().querySelector('#pca-note-input');
+    if (noteInput) {
+        noteInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') pcaAddNote();
+        });
+    }
+
+    pcaRenderQueueDock();
+}
+
+function pcaRenderQueueDock() {
+    var doc = pcaGetDoc();
+    var root = doc.querySelector('#pca-root');
+    if (!root) return;
+
+    var existing = root.querySelector('#pca-queue-dock');
+    if (existing) existing.remove();
+
+    if (pcaState.activeTab !== 'migrate') return;
+
+    var pendingCount = pcaState.migratePending.length;
+    var expanded = pcaState.migrateQueueExpanded;
+
+    var dock = doc.createElement('div');
+    dock.id = 'pca-queue-dock';
+    // 留出右侧空间不遮挡内容区滚动条（约 12-14px）
+    dock.style.cssText = 'position:absolute;left:0;right:14px;bottom:0;background:'+pcaC.card2+';border-top:1px solid '+pcaC.migrateBorder+';box-shadow:0 -4px 16px rgba(0,0,0,0.4);z-index:10;max-height:'+(expanded?'min(320px,50dvh)':'44px')+';display:flex;flex-direction:column;transition:max-height 0.2s;';
+
+    var html = '';
+    // 顶部条
+    html += '<div style="padding:10px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;user-select:none;">';
+    html += '<div data-pca-action="queue-toggle" style="display:flex;align-items:center;gap:10px;cursor:pointer;flex:1;">';
+    html += '<span style="font-size:13px;font-weight:600;color:'+pcaC.migrate+';">📦 待迁移队列</span>';
+    if (pendingCount > 0) {
+        html += '<span style="background:'+pcaC.migrate+';color:#fff;font-size:11px;font-weight:700;padding:1px 8px;border-radius:10px;">'+pendingCount+'</span>';
+    } else {
+        html += '<span style="font-size:11px;color:'+pcaC.dim+';">（队列为空）</span>';
+    }
+    html += '</div>';
+    html += '<div style="display:flex;align-items:center;gap:8px;">';
+    html += '<span data-pca-action="conf-help-popover" style="font-size:11px;color:'+pcaC.gold+';border:1px solid '+pcaC.goldDim+';border-radius:6px;padding:3px 10px;cursor:help;white-space:nowrap;" title="点击查看智能定位置信度说明">📍 智能定位置信度说明</span>';
+    html += '<span data-pca-action="queue-toggle" style="font-size:14px;color:'+pcaC.dim+';cursor:pointer;padding:0 4px;">'+(expanded?'▼':'▲')+'</span>';
+    html += '</div>';
+    html += '</div>';
+
+    if (expanded) {
+        // 列表
+        html += '<div style="flex:1;overflow-y:auto;padding:0 18px 8px;">';
+        if (pendingCount === 0) {
+            html += '<div style="text-align:center;padding:20px;color:'+pcaC.dim+';font-size:12px;">从上方点击「📦 迁移」按钮添加条目</div>';
+        } else {
+            pcaState.migratePending.forEach(function(p, pi) {
+                var typeLabel = p.action === 'overwrite' ? '<span style="color:'+pcaC.gold+';">覆盖</span>' : '<span style="color:'+pcaC.success+';">新建</span>';
+                var posLabel = '';
+                if (p.action === 'new') {
+                    if (p.insertAfterName) {
+                        posLabel = ' → 在「'+pcaEsc(p.insertAfterName)+'」后';
+                    } else if (p.insertBeforeName) {
+                        posLabel = ' → 在「'+pcaEsc(p.insertBeforeName)+'」前';
+                    } else if (p.insertIndex === 0) {
+                        posLabel = ' → 最顶部';
+                    } else {
+                        posLabel = ' → 末尾';
+                    }
+                }
+                // 置信度色标
+                var confTag = '';
+                if (p.action === 'new') {
+                    if (p.confidence === 'high') confTag = '<span title="智能定位：高置信" style="color:'+pcaC.success+';font-size:10px;margin-left:4px;">🟢</span>';
+                    else if (p.confidence === 'medium') confTag = '<span title="智能定位：中置信" style="color:'+pcaC.gold+';font-size:10px;margin-left:4px;">🟡</span>';
+                    else if (p.confidence === 'low') confTag = '<span title="智能定位：低置信，建议手工调整" style="color:'+pcaC.danger+';font-size:10px;margin-left:4px;">🔴</span>';
+                }
+                var editedTag = p._edited ? '<span title="内容已编辑" style="color:'+pcaC.gold+';font-size:10px;margin-left:4px;">✏️</span>' : '';
+                html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
+                html += '<span style="font-size:12px;color:'+pcaC.text+';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+typeLabel+confTag+editedTag+' '+pcaEsc(p.entry.name)+'<span style="color:'+pcaC.dim+';font-size:11px;">'+posLabel+'</span></span>';
+                html += '<span data-pca-action="migrate-repos" data-pca-idx="'+pi+'" style="font-size:11px;color:'+pcaC.migrate+';flex-shrink:0;cursor:pointer;padding:0 6px;" title="改位置">📍</span>';
+                html += '<span data-pca-action="migrate-edit-pending" data-pca-idx="'+pi+'" style="font-size:11px;color:'+pcaC.gold+';flex-shrink:0;cursor:pointer;padding:0 6px;" title="编辑此队列项">✏️</span>';
+                html += '<span data-pca-action="migrate-remove" data-pca-idx="'+pi+'" style="font-size:11px;color:'+pcaC.danger+';flex-shrink:0;cursor:pointer;padding:0 6px;">✕</span>';
+                html += '</div>';
+                if (p.posWarn) {
+                    html += '<div style="font-size:10px;color:'+pcaC.gold+';padding:0 0 6px 4px;line-height:1.4;">⚠ '+pcaEsc(p.posWarn)+'</div>';
+                }
+            });
+        }
+        html += '</div>';
+
+        // 底部按钮
+        html += '<div style="padding:8px 18px;border-top:1px solid '+pcaC.border+';display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0;">';
+        if (pcaState.migrateUndoStack.length > 0) {
+            html += '<button data-pca-action="migrate-undo" class="pca-btn pca-btn-danger" style="padding:4px 10px;font-size:11px;">↩ 撤销</button>';
+        }
+        if (pendingCount > 0) {
+            html += '<button data-pca-action="migrate-clear" class="pca-btn" style="padding:4px 10px;font-size:11px;">清空</button>';
+            html += '<button data-pca-action="migrate-apply" class="pca-btn-primary pca-glow" style="padding:5px 16px;font-size:12px;">应用并保存</button>';
+        }
+        html += '</div>';
+    }
+
+    dock.innerHTML = html;
+    root.appendChild(dock);
+}
+
+function pcaShowInsertPositionPicker(entry, callback) {
+    var doc = pcaGetDoc();
+    var rightEntries = pcaExtract(pcaState.rightPresetData);
+
+    pcaState.migratePending.forEach(function(p) {
+        if (p.action === 'new') {
+            var idx = p.insertIndex !== undefined ? p.insertIndex : rightEntries.length;
+            if (idx > rightEntries.length) idx = rightEntries.length;
+            rightEntries.splice(idx, 0, p.entry);
+        }
+    });
+
+    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');
+    var html = '<div class="pca-modal-overlay" id="pca-insert-overlay">';
+    html += '<div style="background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:min(600px,96vw);max-height:min(80vh,720px);max-height:min(80dvh,720px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);">';
+
+    html += '<div style="padding:14px 20px;border-bottom:1px solid '+pcaC.border+';flex-shrink:0;">';
+    html += '<div style="font-size:15px;font-weight:700;color:'+pcaC.migrate+';margin-bottom:6px;">📍 选择插入位置</div>';
+    html += '<div style="font-size:12px;color:'+pcaC.dim+';word-break:break-word;">将「<span style="color:'+pcaC.pink+';">'+pcaEsc(entry.name)+'</span>」插入到「'+pcaEsc(pcaState.rightName)+'」</div>';
+    html += '<div style="font-size:11px;color:'+pcaC.dim+';margin-top:4px;">点击 <span style="color:'+pcaC.migrate+';">➕</span> 选择位置</div>';
+    html += '</div>';
+
+    html += '<div style="flex:1;overflow-y:auto;padding:10px 16px;">';
+
+    html += '<div class="pca-insert-line" data-pca-action="pick-pos" data-pca-pos="0" style="display:flex;align-items:center;gap:8px;padding:6px 12px;margin:4px 0;border:1px dashed '+pcaC.border+';border-radius:6px;">';
+    html += '<span class="pca-insert-icon" style="color:'+pcaC.dim+';font-size:14px;transition:all 0.15s;">➕</span>';
+    html += '<span style="font-size:11px;color:'+pcaC.dim+';">插入到最顶部</span>';
+    html += '</div>';
+
+    rightEntries.forEach(function(e, idx) {
+        html += '<div class="pca-entry-item" style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:'+pcaC.card+';border:1px solid '+pcaC.border+';border-radius:6px;margin:2px 0;">';
+        html += '<span style="font-size:10px;color:'+pcaC.dim+';min-width:24px;text-align:right;flex-shrink:0;">#'+(idx+1)+'</span>';
+        html += '<span style="color:'+(e.enabled?pcaC.pink:pcaC.off)+';font-size:10px;flex-shrink:0;">'+(e.enabled?'●':'○')+'</span>';
+        html += '<span style="font-size:12px;color:'+pcaC.text+';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+pcaEsc(e.name)+'</span>';
+        if (e.marker) html += '<span style="font-size:9px;color:'+pcaC.gold+';flex-shrink:0;">📌</span>';
+        html += '</div>';
+
+        html += '<div class="pca-insert-line" data-pca-action="pick-pos" data-pca-pos="'+(idx+1)+'" data-pca-after="'+pcaAttr(e.name)+'" style="display:flex;align-items:center;gap:8px;padding:6px 12px;margin:4px 0;border:1px dashed '+pcaC.border+';border-radius:6px;">';
+        html += '<span class="pca-insert-icon" style="color:'+pcaC.dim+';font-size:14px;transition:all 0.15s;">➕</span>';
+        html += '<span style="font-size:11px;color:'+pcaC.dim+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">在「'+pcaEsc(e.name)+'」之后</span>';
+        html += '</div>';
+    });
+
+    html += '</div>';
+
+    html += '<div style="padding:12px 20px;border-top:1px solid '+pcaC.border+';text-align:right;flex-shrink:0;">';
+    html += '<button data-pca-action="pick-cancel" class="pca-modal-btn">取消</button>';
+    html += '</div>';
+
+    html += '</div></div>';
+
+    var overlay = doc.createElement('div');
+    overlay.innerHTML = html;
+    var overlayEl = overlay.firstChild;
+    if (existingDialog) { existingDialog.appendChild(overlayEl); } else { doc.body.appendChild(overlayEl); }
+
+    overlayEl.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var thisOverlay = doc.querySelector('#pca-insert-overlay');
+        var target = e.target;
+        while (target && target !== thisOverlay) {
+            if (target.getAttribute && target.getAttribute('data-pca-action')) break;
+            target = target.parentElement;
+        }
+        if (!target || target === thisOverlay) {
+            if (e.target === thisOverlay) { thisOverlay.remove(); callback(-1, ''); }
+            return;
+        }
+        var action = target.getAttribute('data-pca-action');
+        if (action === 'pick-pos') {
+            var pos = parseInt(target.getAttribute('data-pca-pos'), 10);
+            var afterName = target.getAttribute('data-pca-after') || '';
+            thisOverlay.remove();
+            callback(pos, afterName);
+        } else if (action === 'pick-cancel') {
+            thisOverlay.remove();
+            callback(-1, '');
+        }
+    });
+}
+
+function pcaShowConfirm(message, callback, options) {
+    options = options || {};
+    var yesText = options.yesText || '确认';
+    var noText = options.noText || '取消';
+    var yesColor = options.yesColor || pcaC.gold;
+    var yesColorDim = options.yesColorDim || pcaC.goldDim;
+    var doc = pcaGetDoc();
+    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');
+    var html = '<div class="pca-modal-overlay" id="pca-confirm-overlay">';
+    html += '<div style="background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:12px;padding:24px;width:min(420px,94vw);box-shadow:0 8px 32px rgba(0,0,0,0.6);">';
+    html += '<div style="font-size:14px;color:'+pcaC.text+';margin-bottom:16px;line-height:1.5;">'+message+'</div>';
+    html += '<div style="display:flex;justify-content:flex-end;gap:10px;">';
+    html += '<button data-pca-action="confirm-no" class="pca-modal-btn">'+pcaEsc(noText)+'</button>';
+    html += '<button data-pca-action="confirm-yes" class="pca-modal-btn-primary">'+pcaEsc(yesText)+'</button>';
+    html += '</div></div></div>';
+
+    var overlay = doc.createElement('div');
+    overlay.innerHTML = html;
+    var overlayEl = overlay.firstChild;
+    if (existingDialog) { existingDialog.appendChild(overlayEl); } else { doc.body.appendChild(overlayEl); }
+
+    overlayEl.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var thisOverlay = doc.querySelector('#pca-confirm-overlay');
+        var target = e.target;
+        while (target && target !== thisOverlay) {
+            if (target.getAttribute && target.getAttribute('data-pca-action')) break;
+            target = target.parentElement;
+        }
+        if (!target) return;
+        var action = target.getAttribute('data-pca-action');
+        if (action === 'confirm-yes') { thisOverlay.remove(); callback(true); }
+        else if (action === 'confirm-no') { thisOverlay.remove(); callback(false); }
+        else if (target === thisOverlay) { thisOverlay.remove(); callback(false); }
+    });
+}
+
+// ============ 编辑器（新增功能） ============
+
+function pcaCloseEditor(force) {
+    var doc = pcaGetDoc();
+    var ov = doc.querySelector('#pca-editor-overlay');
+    if (!ov) return;
+    var es = pcaState.editorState;
+    if (es && !force) {
+        // 同步当前textarea内容到草稿
+        var ta = doc.querySelector('#pca-ed-textarea');
+        if (ta && es.activeVersion) {
+            pcaState.editorDrafts[es.entryId] = pcaState.editorDrafts[es.entryId] || {};
+            pcaState.editorDrafts[es.entryId][es.activeVersion] = ta.value;
+        }
+        // 检查是否有未保存修改
+        var dirty = pcaEditorIsDirty();
+        if (dirty) {
+            pcaShowConfirm(
+                '⚠️ 编辑内容尚未提交，关闭后将丢失所有修改<br><br>确定丢弃修改并关闭吗？',
+                function(confirmed) { if (confirmed) { pcaState.editorState=null; ov.remove(); var __mr2=pcaGetDoc().querySelector('#pca-ed-linemirror'); if(__mr2)__mr2.remove(); } },
+                { yesText:'丢弃并关闭', noText:'继续编辑', yesColor:pcaC.danger, yesColorDim:'#a04050' }
+            );
+            return;
+        }
+    }
+    pcaState.editorState = null;
+    ov.remove();
+    var __mr = pcaGetDoc().querySelector('#pca-ed-linemirror');
+    if (__mr) __mr.remove();
+}
+
+function pcaEditorIsDirty() {
+    var es = pcaState.editorState;
+    if (!es) return false;
+    var drafts = pcaState.editorDrafts[es.entryId] || {};
+    if (drafts.left !== undefined && drafts.left !== es.originalLeft) return true;
+    if (drafts.right !== undefined && drafts.right !== (es.originalRight || '')) return true;
+    return false;
+}
+
+// ========== 字段编辑（二级面板）辅助 ==========
+// ST 预设条目的可识别字段及取值
+var PCA_FIELD_ROLES = ['system', 'user', 'assistant'];
+var PCA_FIELD_POSITIONS = [
+    { v: 0, label: 'Relative（相对位置）' },
+    { v: 1, label: 'In-chat（按深度注入）' }
+];
+var PCA_FIELD_TRIGGERS = ['normal', 'continue', 'impersonate', 'swipe', 'regenerate', 'quiet'];
+var PCA_RESERVED_IDS = ['main', 'nsfw', 'jailbreak', 'enhanceDefinitions', 'worldInfoBefore', 'worldInfoAfter', 'charDescription', 'charPersonality', 'scenario', 'personaDescription', 'dialogueExamples', 'chatHistory'];
+
+function pcaIsReservedId(id) {
+    if (!id) return false;
+    return PCA_RESERVED_IDS.indexOf(id) >= 0;
+}
+
+// 从源预设找原始 prompt（保留所有字段）
+function pcaEditorPickRawFields(entry) {
+    var raw = null;
+    try {
+        var leftPreset = pcaState.leftPresetData;
+        if (!leftPreset || !Array.isArray(leftPreset.prompts)) return null;
+        var origId = entry._origId || null;
+        if (origId) {
+            for (var i = 0; i < leftPreset.prompts.length; i++) {
+                if (leftPreset.prompts[i] && leftPreset.prompts[i].identifier === origId) { raw = leftPreset.prompts[i]; break; }
+            }
+        }
+        if (!raw) {
+            for (var j = 0; j < leftPreset.prompts.length; j++) {
+                var pp = leftPreset.prompts[j];
+                if (pp && (pp.identifier === entry.id || pp.name === entry.name)) { raw = pp; break; }
+            }
+        }
+    } catch(_e) {}
+    return raw;
+}
+
+// 构造编辑器面板的字段默认值（合并：原始 raw → entry → existingOverrides）
+function pcaEditorBuildFieldDefaults(raw, entry, existing) {
+    raw = raw || {};
+    existing = existing || {};
+    function pick(key, fallback) {
+        if (existing && Object.prototype.hasOwnProperty.call(existing, key)) return existing[key];
+        if (raw && Object.prototype.hasOwnProperty.call(raw, key)) return raw[key];
+        return fallback;
+    }
+    return {
+        identifier: pick('identifier', entry.id || ''),
+        name: pick('name', entry.name || ''),
+        role: pick('role', entry.role || 'system'),
+        injection_position: pick('injection_position', 0),
+        injection_depth: pick('injection_depth', 4),
+        injection_order: pick('injection_order', 100),
+        injection_trigger: (function(){
+            var v = pick('injection_trigger', null);
+            if (v === null || v === undefined) return null;
+            if (Array.isArray(v)) return v.slice();
+            return null;
+        })(),
+        system_prompt: !!pick('system_prompt', false),
+        marker: !!pick('marker', !!entry.marker),
+        forbid_overrides: !!pick('forbid_overrides', false),
+    };
+}
+
+function pcaOpenEditor(entry, options) {
+    options = options || {};
+    var doc = pcaGetDoc();
+    if (doc.querySelector('#pca-editor-overlay')) return;
+
+    // 找右侧匹配（用于参考栏 + 版本切换）
+    var rightMatch = null;
+    pcaState.rightEntries.forEach(function(re) {
+        if (re.id === entry.id || re.name === entry.name) rightMatch = re;
+    });
+
+    // 队列已有项的覆盖：如果是从队列里再编辑，初始内容用队列里那份
+    var pendingItem = null;
+    pcaState.migratePending.forEach(function(p) { if (p.entry.id === entry.id) pendingItem = p; });
+
+    var leftContent = entry.content || '';
+    var rightContent = rightMatch ? (rightMatch.content || '') : '';
+    var hasRight = !!rightMatch;
+    var hasDiff = hasRight && (leftContent !== rightContent);
+
+    // 默认选中版本
+    var defaultVersion = 'left';
+    if (pendingItem && pendingItem._editedFrom) {
+        defaultVersion = pendingItem._editedFrom;
+    }
+
+    // 初始化草稿（如果是从队列再编辑，用队列里的内容覆盖对应版本草稿）
+    if (!pcaState.editorDrafts[entry.id]) pcaState.editorDrafts[entry.id] = {};
+    if (pendingItem) {
+        pcaState.editorDrafts[entry.id][defaultVersion] = pendingItem.entry.content || '';
+    }
+
+    // 从源预设取原始 prompt 字段（用于字段编辑面板初值），匹配优先 _origId（复制为新条目时） → identifier → name
+    var rawFields = pcaEditorPickRawFields(entry);
+    // 已有的字段覆写（来自 pending 或 entry._fieldOverrides）
+    var existingOverrides = (pendingItem && pendingItem.fieldOverrides) || entry._fieldOverrides || null;
+    var fieldOverrides = pcaEditorBuildFieldDefaults(rawFields, entry, existingOverrides);
+    pcaState.editorState = {
+        entryId: entry.id,
+        entryName: entry.name,
+        leftEntry: entry,
+        rightEntry: rightMatch,
+        hasRight: hasRight,
+        hasDiff: hasDiff,
+        activeVersion: defaultVersion,
+        originalLeft: leftContent,
+        originalRight: rightContent,
+        referenceVisible: hasRight,
+        fromPendingIdx: pendingItem ? pcaState.migratePending.indexOf(pendingItem) : -1,
+        // 字段编辑：当前生效值（用户改过的 + 源原始值）
+        fieldOverrides: fieldOverrides,
+        rawFields: rawFields,
+        fieldsView: false,
+        // 条目编辑模式：true 时保存进 editPending（自改 / 反向），false 时走 migrate 流程
+        isEditTarget: !!options.isEditTarget,
+    };
+
+    var ov = doc.createElement('div');
+    ov.id = 'pca-editor-overlay';
+    ov.className = 'pca-modal-overlay';
+    ov.innerHTML = pcaBuildEditorHTML();
+
+    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');
+    if (existingDialog) existingDialog.appendChild(ov); else doc.body.appendChild(ov);
+
+    pcaBindEditor();
+    pcaEditorRefreshPasteHint();
+    pcaEditorRefreshContent();
+}
+
+function pcaBuildFieldsPanelHTML() {
+    var es = pcaState.editorState;
+    var fo = es.fieldOverrides;
+    var idLocked = pcaIsReservedId(fo.identifier);
+    var pad = 'padding:6px 8px;background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;color:'+pcaC.text+';font-size:12px;font-family:inherit;outline:none;width:100%;box-sizing:border-box;';
+    var rowLabel = 'font-size:11px;color:'+pcaC.dim+';margin-bottom:4px;font-weight:600;';
+    var section = 'margin-bottom:14px;';
+    var hint = 'font-size:10px;color:'+pcaC.dim+';margin-top:3px;line-height:1.4;';
+    var h = '';
+    h += '<div id="pca-ed-fields-panel" style="flex:1;min-height:0;overflow-y:auto;padding:14px 18px 8px;">';
+    h += '<div style="font-size:11px;color:'+pcaC.gold+';margin-bottom:14px;line-height:1.5;background:rgba(212,168,83,0.08);border-left:3px solid '+pcaC.goldDim+';padding:8px 10px;border-radius:4px;">⚙ 这里编辑的是「<b>迁移到目标预设时</b>」该条目的字段。修改不影响源预设。点「✓ 保存字段」生效，再回正文编辑。</div>';
+
+    // 基础区
+    h += '<div style="'+section+'"><div style="'+rowLabel+'">📛 名称（name）</div>';
+    h += '<input id="pca-fld-name" type="text" value="'+pcaAttr(fo.name||'')+'" style="'+pad+'" />';
+    h += '</div>';
+
+    h += '<div style="'+section+'"><div style="'+rowLabel+'">🆔 ID（identifier）</div>';
+    if (idLocked) {
+        h += '<input id="pca-fld-id" type="text" value="'+pcaAttr(fo.identifier||'')+'" style="'+pad+'opacity:0.7;cursor:not-allowed;" readonly />';
+        h += '<div style="'+hint+';color:'+pcaC.danger+';">⚠ 「'+pcaEsc(fo.identifier)+'」是 ST 保留 ID，不能修改（修改后 ST 找不到主入口）</div>';
+    } else {
+        h += '<div style="display:flex;gap:6px;">';
+        h += '<input id="pca-fld-id" type="text" value="'+pcaAttr(fo.identifier||'')+'" style="'+pad+'flex:1;" />';
+        h += '<button data-pca-action="ed-fields-newid" class="pca-modal-btn" style="padding:5px 12px;font-size:11px;flex-shrink:0;" title="生成新 UUID">🎲 新 ID</button>';
+        h += '</div>';
+        h += '<div style="'+hint+'">改 ID 后等同新建一个条目；如目标预设已存在该 ID 的条目，会被本条覆盖</div>';
+    }
+    h += '</div>';
+
+    h += '<div style="'+section+'"><div style="'+rowLabel+'">🎭 角色（role）</div>';
+    h += '<select id="pca-fld-role" style="'+pad+'">';
+    PCA_FIELD_ROLES.forEach(function(r){
+        var sel = (fo.role === r) ? ' selected' : '';
+        h += '<option value="'+pcaAttr(r)+'"'+sel+'>'+pcaEsc(r)+'</option>';
+    });
+    h += '</select>';
+    h += '</div>';
+
+    // 注入位置区
+    h += '<div style="'+section+'border-top:1px dashed '+pcaC.border+';padding-top:14px;">';
+    h += '<div style="'+rowLabel+'">📍 注入位置（injection_position）</div>';
+    h += '<select id="pca-fld-pos" style="'+pad+'">';
+    PCA_FIELD_POSITIONS.forEach(function(p){
+        var sel = (Number(fo.injection_position) === p.v) ? ' selected' : '';
+        h += '<option value="'+p.v+'"'+sel+'>'+pcaEsc(p.label)+'</option>';
+    });
+    h += '</select>';
+    h += '<div style="'+hint+'">Relative：跟随条目顺序；In-chat：按下方深度插入到聊天历史中</div>';
+    h += '</div>';
+
+    h += '<div style="'+section+'display:flex;gap:10px;">';
+    h += '<div style="flex:1;"><div style="'+rowLabel+'">🌊 深度（depth）</div>';
+    h += '<input id="pca-fld-depth" type="number" min="0" max="100" value="'+(fo.injection_depth!=null?fo.injection_depth:4)+'" style="'+pad+'" />';
+    h += '<div style="'+hint+'">In-chat 模式下生效</div></div>';
+    h += '<div style="flex:1;"><div style="'+rowLabel+'">🔢 顺序（order）</div>';
+    h += '<input id="pca-fld-order" type="number" min="0" value="'+(fo.injection_order!=null?fo.injection_order:100)+'" style="'+pad+'" />';
+    h += '<div style="'+hint+'">同位置时按 order 排序</div></div>';
+    h += '</div>';
+
+    // 触发器
+    h += '<div style="'+section+'border-top:1px dashed '+pcaC.border+';padding-top:14px;">';
+    h += '<div style="'+rowLabel+'">⚡ 触发器（injection_trigger）</div>';
+    var trigEnabled = Array.isArray(fo.injection_trigger);
+    h += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:'+pcaC.text+';margin-bottom:8px;cursor:pointer;">';
+    h += '<input type="checkbox" id="pca-fld-trig-enable"'+(trigEnabled?' checked':'')+' style="cursor:pointer;" /> 启用触发器限制（不勾 = 任何时候都注入）';
+    h += '</label>';
+    h += '<div id="pca-fld-trig-list" style="display:'+(trigEnabled?'flex':'none')+';flex-wrap:wrap;gap:6px;padding:8px;background:'+pcaC.card+';border-radius:6px;border:1px solid '+pcaC.border+';">';
+    PCA_FIELD_TRIGGERS.forEach(function(t){
+        var checked = trigEnabled && fo.injection_trigger.indexOf(t) >= 0;
+        h += '<label style="display:flex;align-items:center;gap:4px;font-size:11px;color:'+pcaC.text+';cursor:pointer;padding:3px 8px;background:'+(checked?pcaC.migrateBg:pcaC.input)+';border:1px solid '+(checked?pcaC.migrateBorder:pcaC.border)+';border-radius:4px;">';
+        h += '<input type="checkbox" data-pca-trig="'+pcaAttr(t)+'"'+(checked?' checked':'')+' style="cursor:pointer;" /> '+pcaEsc(t);
+        h += '</label>';
+    });
+    h += '</div>';
+    h += '<div style="'+hint+'">勾选后：仅在所选场景触发；如你的 ST 版本不支持此字段，保持不勾即可</div>';
+    h += '</div>';
+
+    // 布尔开关
+    h += '<div style="'+section+'border-top:1px dashed '+pcaC.border+';padding-top:14px;">';
+    h += '<div style="display:flex;flex-direction:column;gap:8px;">';
+    function bool(id, label, val, tip) {
+        var rh = '';
+        rh += '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:'+pcaC.text+';cursor:pointer;">';
+        rh += '<input type="checkbox" id="'+id+'"'+(val?' checked':'')+' style="cursor:pointer;width:14px;height:14px;" />';
+        rh += '<span>'+pcaEsc(label)+'</span>';
+        if (tip) rh += '<span style="font-size:10px;color:'+pcaC.dim+';">'+pcaEsc(tip)+'</span>';
+        rh += '</label>';
+        return rh;
+    }
+    h += bool('pca-fld-syspr', '系统主入口（system_prompt）', fo.system_prompt, '保留 ID 通常为 true');
+    h += bool('pca-fld-marker', '标记条目（marker）', fo.marker, '占位符，无 content');
+    h += bool('pca-fld-forbid', '禁止覆盖（forbid_overrides）', fo.forbid_overrides, '');
+    h += '</div></div>';
+
+    h += '</div>'; // panel
+
+    // 底部按钮（独立 div，ID 化方便切显隐，全用 modal 类保证样式生效）
+    h += '<div id="pca-ed-fields-bottom" style="padding:10px 18px;border-top:1px solid '+pcaC.border+';display:flex;gap:8px;justify-content:space-between;flex-shrink:0;flex-wrap:wrap;">';
+    h += '<button data-pca-action="ed-fields-reset" class="pca-modal-btn" style="color:'+pcaC.danger+';border-color:rgba(224,96,112,0.3);">↺ 重置为源预设值</button>';
+    h += '<div style="display:flex;gap:8px;">';
+    h += '<button data-pca-action="ed-fields-cancel" class="pca-modal-btn">取消</button>';
+    h += '<button data-pca-action="ed-fields-save" class="pca-modal-btn-primary">✓ 保存字段</button>';
+    h += '</div>';
+    h += '</div>';
+
+    return h;
+}
+
+function pcaBuildEditorHTML() {
+    var es = pcaState.editorState;
+    var h = '';
+    h += '<div class="pca-ed-modal" style="background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:780px;max-width:96vw;max-height:92vh;max-height:92dvh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);">';
+
+    // 头部
+    h += '<div style="padding:12px 18px;border-bottom:1px solid '+pcaC.border+';display:flex;align-items:center;justify-content:space-between;flex-shrink:0;gap:10px;">';
+    h += '<div style="flex:1;min-width:0;">';
+    h += '<div style="font-size:14px;font-weight:700;color:'+pcaC.migrate+';margin-bottom:3px;">✏️ 编辑后迁移</div>';
+    h += '<div style="font-size:12px;color:'+pcaC.text+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+pcaEsc(es.entryName)+' <span style="font-size:10px;color:'+pcaC.dim+';">('+pcaEsc(es.entryId)+')</span></div>';
+    h += '</div>';
+    h += '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">';
+    var fieldsActive = !!es.fieldsView;
+    h += '<span data-pca-action="ed-toggle-fields" class="pca-ed-btn" style="'+(fieldsActive?'color:'+pcaC.gold+';border-color:'+pcaC.goldDim+';':'')+'" title="编辑此条目的字段（name/id/role/位置/触发器等）">⚙ 字段</span>';
+    h += '<span data-pca-action="ed-close" style="color:'+pcaC.dim+';font-size:20px;padding:4px 8px;cursor:pointer;">✕</span>';
+    h += '</div>';
+    h += '</div>';
+
+    // 版本切换 tabs（仅当目标已有时显示）
+    if (es.hasRight) {
+        h += '<div id="pca-ed-tabs-bar" style="padding:8px 18px 0;border-bottom:1px solid '+pcaC.border+';display:flex;gap:4px;align-items:flex-end;flex-shrink:0;flex-wrap:wrap;">';
+        h += '<span data-pca-action="ed-switch-ver" data-pca-ver="left" class="pca-ed-tab'+(es.activeVersion==='left'?' active':'')+'">📁 旧版（左）'+(es.hasDiff?' ⚡':'')+'</span>';
+        h += '<span data-pca-action="ed-switch-ver" data-pca-ver="right" class="pca-ed-tab'+(es.activeVersion==='right'?' active':'')+'">📂 新版（右）'+(es.hasDiff?' ⚡':'')+'</span>';
+        h += '<span style="font-size:10px;color:'+pcaC.dim+';margin-left:auto;padding:0 4px 6px;">'+(es.hasDiff?'⚡ 两版本内容有差异':'两版本内容相同')+'</span>';
+        h += '</div>';
+    }
+
+    // 工具栏
+    h += '<div id="pca-ed-toolbar" style="padding:8px 18px;border-bottom:1px solid '+pcaC.border+';display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0;align-items:center;">';
+    h += '<span data-pca-action="ed-tool" data-pca-tool="selectall" class="pca-ed-btn">全选</span>';
+    h += '<span data-pca-action="ed-tool" data-pca-tool="copy" class="pca-ed-btn">📋 复制</span>';
+    h += '<span id="pca-ed-paste-btn" data-pca-action="ed-tool" data-pca-tool="paste" class="pca-ed-btn" title="点击粘贴；优先系统剪贴板，否则使用脚本暗存内容">📥 粘贴</span>';
+    h += '<span id="pca-ed-paste-hint" style="font-size:10px;color:'+pcaC.dim+';align-self:center;display:none;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>';
+    h += '<span data-pca-action="ed-tool" data-pca-tool="undo" class="pca-ed-btn">↶ 撤销</span>';
+    h += '<span data-pca-action="ed-tool" data-pca-tool="redo" class="pca-ed-btn">↷ 重做</span>';
+    h += '<span data-pca-action="ed-tool" data-pca-tool="reset" class="pca-ed-btn" style="color:'+pcaC.danger+';border-color:rgba(224,96,112,0.3);">↺ 还原本版</span>';
+    var wrapOn = pcaState.editorWrap !== false;
+    var wrapLabel = wrapOn ? '🔁 自动换行' : '📐 不换行';
+    h += '<span data-pca-action="ed-toggle-wrap" class="pca-ed-btn" title="切换长行是否软换行；不影响实际行数">'+wrapLabel+'</span>';
+    if (es.hasRight) {
+        var refLabel = es.referenceVisible ? '🙈 隐藏参考' : '👁 显示参考';
+        h += '<span data-pca-action="ed-toggle-ref" class="pca-ed-btn" style="margin-left:auto;color:'+pcaC.gold+';border-color:'+pcaC.goldDim+';">'+refLabel+'</span>';
+    }
+    h += '</div>';
+
+    // 主体（编辑区 + 参考区，各占一半，可上下滚动）
+    h += '<div id="pca-ed-body" style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;">';
+
+    // 编辑区
+    h += '<div style="flex:'+(es.hasRight?'1':'1 1 100%')+';min-height:140px;padding:10px 18px;display:flex;flex-direction:column;overflow:hidden;">';
+    h += '<div style="font-size:11px;color:'+pcaC.dim+';margin-bottom:4px;display:flex;justify-content:space-between;flex-shrink:0;">';
+    h += '<span id="pca-ed-active-label">正在编辑</span>';
+    h += '<span id="pca-ed-stats" style="font-size:10px;"></span>';
+    h += '</div>';
+    // textarea + 行号容器
+    h += '<div style="flex:1;min-height:120px;display:flex;background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;overflow:hidden;">';
+    h += '<div id="pca-ed-linenums" style="flex-shrink:0;background:'+pcaC.card+';color:'+pcaC.off+';font-family:Consolas,Menlo,monospace;font-size:14px;line-height:1.6;padding:10px 6px 24px 10px;text-align:right;user-select:none;overflow:hidden;min-width:36px;max-height:100%;border-right:1px solid '+pcaC.border+';white-space:pre;box-sizing:border-box;align-self:stretch;"></div>';
+    var taWrapAttr = (pcaState.editorWrap !== false) ? 'soft' : 'off';
+    var taWhite = (pcaState.editorWrap !== false) ? 'pre-wrap' : 'pre';
+    var taOverflowX = (pcaState.editorWrap !== false) ? 'hidden' : 'auto';
+    var taWordBreak = (pcaState.editorWrap !== false) ? 'break-word' : 'normal';
+    h += '<textarea id="pca-ed-textarea" wrap="'+taWrapAttr+'" style="flex:1;min-width:0;border:none!important;border-radius:0!important;background:transparent!important;line-height:1.6!important;padding:10px 12px!important;font-size:14px!important;font-family:Consolas,Menlo,monospace!important;white-space:'+taWhite+'!important;overflow-x:'+taOverflowX+'!important;overflow-y:auto!important;word-break:'+taWordBreak+'!important;"></textarea>';
+    h += '</div>';
+    h += '</div>';
+
+    // 参考区
+    if (es.hasRight) {
+        h += '<div id="pca-ed-ref-container" style="flex:'+(es.referenceVisible?'1':'0 0 0')+';min-height:'+(es.referenceVisible?'120px':'0')+';border-top:1px solid '+pcaC.border+';display:'+(es.referenceVisible?'flex':'none')+';flex-direction:column;overflow:hidden;">';
+        h += '<div style="padding:8px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;background:'+pcaC.card+';flex-wrap:wrap;gap:6px;">';
+        h += '<span id="pca-ed-ref-label" style="font-size:12px;font-weight:600;color:'+pcaC.gold+';">📖 另一版本（参考）</span>';
+        h += '</div>';
+        h += '<div id="pca-ed-ref-content" style="flex:1;overflow-y:auto;padding:6px 18px 10px;min-height:0;"></div>';
+        h += '</div>';
+    }
+
+    h += '</div>';
+
+    // 底部按钮
+    h += '<div id="pca-ed-bottom-bar" style="padding:10px 18px;border-top:1px solid '+pcaC.border+';display:flex;gap:8px;justify-content:flex-end;flex-shrink:0;flex-wrap:wrap;">';
+    h += '<button data-pca-action="ed-cancel" class="pca-modal-btn">取消</button>';
+    h += '<button data-pca-action="ed-confirm" class="pca-modal-btn-primary">确认并加入队列</button>';
+    h += '</div>';
+
+    h += '</div>';
+    return h;
+}
+
+function pcaEditorGetCurrentDraft() {
+    var es = pcaState.editorState;
+    if (!es) return '';
+    var drafts = pcaState.editorDrafts[es.entryId] || {};
+    if (es.activeVersion === 'left') {
+        return drafts.left !== undefined ? drafts.left : es.originalLeft;
+    } else {
+        return drafts.right !== undefined ? drafts.right : es.originalRight;
+    }
+}
+
+function pcaEditorUpdateStats() {
+    var doc = pcaGetDoc();
+    var ta = doc.querySelector('#pca-ed-textarea');
+    var st = doc.querySelector('#pca-ed-stats');
+    var ln = doc.querySelector('#pca-ed-linenums');
+    if (!ta) return;
+    var v = ta.value || '';
+    var lineCount = 1;
+    for (var ci = 0; ci < v.length; ci++) { if (v.charCodeAt(ci) === 10) lineCount++; }
+    if (st) st.textContent = v.length + ' 字 / ' + lineCount + ' 行';
+    if (ln) {
+        var inner = ln.firstChild;
+        if (!inner || inner.id !== 'pca-ed-linenums-inner') {
+            ln.textContent = '';
+            inner = doc.createElement('div');
+            inner.id = 'pca-ed-linenums-inner';
+            inner.style.cssText = 'font:inherit;color:inherit;line-height:1.6;white-space:pre;padding:0;margin:0;';
+            ln.appendChild(inner);
+        }
+        var wrapOn = (pcaState.editorWrap !== false);
+        var nums = '';
+        if (!wrapOn) {
+            // 不换行模式：每个逻辑行 = 一个视觉行，行号 1:1
+            for (var i = 1; i <= lineCount; i++) { nums += i + (i < lineCount ? '\n' : ''); }
+        } else {
+            // 软换行模式：用镜像 div 测每个逻辑行的视觉行数
+            var mirror = doc.querySelector('#pca-ed-linemirror');
+            if (!mirror) {
+                mirror = doc.createElement('div');
+                mirror.id = 'pca-ed-linemirror';
+                mirror.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;left:-99999px;top:0;';
+                doc.body.appendChild(mirror);
+            }
+            // 同步关键样式：宽度（textarea 内容宽度 = clientWidth - paddingLeft - paddingRight）、字体、行高、padding、wrap 等
+            var cs = ta.ownerDocument.defaultView.getComputedStyle(ta);
+            var contentW = ta.clientWidth - parseFloat(cs.paddingLeft||0) - parseFloat(cs.paddingRight||0);
+            if (contentW < 10) contentW = 10;
+            mirror.style.width = contentW + 'px';
+            mirror.style.fontFamily = cs.fontFamily;
+            mirror.style.fontSize = cs.fontSize;
+            mirror.style.fontWeight = cs.fontWeight;
+            mirror.style.lineHeight = cs.lineHeight;
+            mirror.style.letterSpacing = cs.letterSpacing;
+            mirror.style.tabSize = cs.tabSize || '4';
+            mirror.style.whiteSpace = 'pre-wrap';
+            mirror.style.wordBreak = cs.wordBreak || 'break-word';
+            mirror.style.overflowWrap = cs.overflowWrap || 'anywhere';
+            mirror.style.boxSizing = 'content-box';
+            mirror.style.padding = '0';
+            mirror.style.margin = '0';
+            mirror.style.border = '0';
+            // 计算单视觉行高度（拿一个空格量）
+            mirror.textContent = ' ';
+            var oneLineH = mirror.getBoundingClientRect().height || (parseFloat(cs.fontSize) * 1.6);
+            // 按 \n 拆每个逻辑行，逐行测高度，转成视觉行数
+            var logicalLines = v.split('\n');
+            var parts = [];
+            for (var li = 0; li < logicalLines.length; li++) {
+                var ltext = logicalLines[li];
+                if (ltext.length === 0) {
+                    parts.push(String(li + 1));
+                } else {
+                    // 用一个不会被 trim 的占位避免 width 为 0
+                    mirror.textContent = ltext + '\u200B';
+                    var h = mirror.getBoundingClientRect().height;
+                    var visRows = Math.max(1, Math.round(h / oneLineH));
+                    var seg = String(li + 1);
+                    for (var k = 1; k < visRows; k++) seg += '\n';
+                    parts.push(seg);
+                }
+            }
+            nums = parts.join('\n');
+        }
+        inner.textContent = nums;
+        var maxDigits = String(lineCount).length;
+        if (maxDigits < 2) maxDigits = 2;
+        ln.style.minWidth = (maxDigits * 9 + 16) + 'px';
+        ln.scrollTop = ta.scrollTop;
+    }
+}
+
+function pcaEditorSyncLinenumScroll() {
+    var doc = pcaGetDoc();
+    var ta = doc.querySelector('#pca-ed-textarea');
+    var ln = doc.querySelector('#pca-ed-linenums');
+    if (ta && ln) ln.scrollTop = ta.scrollTop;
+}
+
+function pcaEditorRefreshContent() {
+    var doc = pcaGetDoc();
+    var es = pcaState.editorState;
+    if (!es) return;
+    var ta = doc.querySelector('#pca-ed-textarea');
+    var lbl = doc.querySelector('#pca-ed-active-label');
+    if (ta) {
+        ta.value = pcaEditorGetCurrentDraft();
+        pcaEditorUpdateStats();
+    }
+    if (lbl) {
+        if (es.activeVersion === 'left') lbl.innerHTML = '<span style="color:'+pcaC.text+';font-weight:600;">正在编辑：</span><span style="color:'+pcaC.pink+';font-weight:600;">📁 旧版（左）</span>';
+        else lbl.innerHTML = '<span style="color:'+pcaC.text+';font-weight:600;">正在编辑：</span><span style="color:'+pcaC.gold+';font-weight:600;">📂 新版（右）</span>';
+    }
+    pcaEditorRefreshReference();
+}
+
+function pcaEditorRefreshReference() {
+    var doc = pcaGetDoc();
+    var es = pcaState.editorState;
+    if (!es || !es.hasRight) return;
+    var refEl = doc.querySelector('#pca-ed-ref-content');
+    var refLbl = doc.querySelector('#pca-ed-ref-label');
+    if (!refEl) return;
+    var otherContent = es.activeVersion === 'left' ? es.originalRight : es.originalLeft;
+    if (refLbl) {
+        refLbl.innerHTML = es.activeVersion === 'left'
+            ? '<span style="color:'+pcaC.text+';">📖 参考：</span><span style="color:'+pcaC.gold+';">📂 新版（右）</span>'
+            : '<span style="color:'+pcaC.text+';">📖 参考：</span><span style="color:'+pcaC.pink+';">📁 旧版（左）</span>';
+    }
+    var html = '';
+    if (!otherContent) {
+        html = '<div style="padding:14px;color:'+pcaC.dim+';font-size:12px;text-align:center;">（另一版本为空）</div>';
+    } else if (!es.hasDiff) {
+        // 内容相同：纯文本+行号，点击跳转到编辑框对应行
+        var lines = otherContent.split('\n');
+        html += '<div style="background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:6px 0;font-size:12px;line-height:1.7;font-family:Consolas,monospace;">';
+        lines.forEach(function(ln, idx) {
+            html += '<div data-pca-action="ed-jump-line" data-pca-jumpline="'+(idx+1)+'" style="padding:1px 10px;color:'+pcaC.dim+';white-space:pre-wrap;word-break:break-all;display:flex;gap:8px;cursor:pointer;">';
+            html += '<span style="color:'+pcaC.off+';flex-shrink:0;min-width:32px;text-align:right;user-select:none;">'+(idx+1)+'</span>';
+            html += '<span style="flex:1;min-width:0;">'+pcaEsc(ln||' ')+'</span>';
+            html += '</div>';
+        });
+        html += '</div>';
+        html += '<div style="margin-top:6px;font-size:10px;color:'+pcaC.dim+';">点击行可跳转到编辑器对应行</div>';
+    } else {
+        // 有差异：构建 diff，每行显示，并标记行号在编辑器中应该跳转的行
+        var aText = pcaEditorGetCurrentDraft();
+        var bText = otherContent;
+        var diff = pcaDiffLines(aText, bText);
+
+        // 计算每个 diff 项在 A（编辑器）中的"目标跳转行"
+        // - same 行：直接对应A中的行号
+        // - add 行（B独有）：跳到前面最近一个 same 行（即在A中的位置）的下一行
+        var aLineCounter = 0;  // A中行号（1-based）
+        var refLineNum = 0;
+        var entries = [];
+        diff.forEach(function(d) {
+            if (d.type === 'same') {
+                aLineCounter++;
+                entries.push({ d:d, jumpA:aLineCounter });
+            } else if (d.type === 'del') {
+                aLineCounter++;
+                // del 不显示在参考里
+            } else if (d.type === 'add') {
+                // add 行（B独有）：跳到"它前面最近的 same 行"在 A 中的位置；
+                // 若它出现在文件最开头（前面没有 same），则跳到第 1 行
+                entries.push({ d:d, jumpA: aLineCounter > 0 ? aLineCounter : 1 });
+            }
+        });
+
+        html += '<div style="background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:6px;padding:6px 0;font-size:12px;line-height:1.7;font-family:Consolas,monospace;">';
+        entries.forEach(function(item) {
+            var d = item.d;
+            if (d.type === 'del') return;
+            refLineNum++;
+            var isAdd = d.type === 'add';
+            var bg = isAdd ? pcaC.diffAdd : 'transparent';
+            var color = isAdd ? pcaC.diffAddText : pcaC.dim;
+            var prefix = isAdd ? '+' : ' ';
+            var lineHtml = '<div class="pca-ed-ref-line" data-pca-action="ed-jump-line" data-pca-jumpline="'+item.jumpA+'" data-pca-add="'+(isAdd?'1':'0')+'" data-pca-text="'+pcaAttr(d.text)+'" style="background:'+bg+';padding:1px 10px;color:'+color+';white-space:pre-wrap;word-break:break-all;display:flex;align-items:flex-start;gap:6px;cursor:pointer;">';
+            lineHtml += '<span style="color:'+pcaC.off+';flex-shrink:0;min-width:32px;text-align:right;user-select:none;">'+refLineNum+'</span>';
+            lineHtml += '<span style="display:inline-block;width:12px;opacity:0.6;user-select:none;flex-shrink:0;">'+prefix+'</span>';
+            lineHtml += '<span style="flex:1;min-width:0;">'+pcaEsc(d.text||' ')+'</span>';
+            if (isAdd) {
+                lineHtml += '<span data-pca-action="ed-append-line" data-pca-text="'+pcaAttr(d.text)+'" title="追加到编辑末尾" style="cursor:pointer;flex-shrink:0;color:'+pcaC.migrate+';font-size:13px;padding:0 4px;">➕</span>';
+                lineHtml += '<span data-pca-action="ed-copy-text" data-pca-text="'+pcaAttr(d.text)+'" title="复制此行" style="cursor:pointer;flex-shrink:0;color:'+pcaC.gold+';font-size:13px;padding:0 4px;">📋</span>';
+            }
+            lineHtml += '</div>';
+            html += lineHtml;
+        });
+        html += '</div>';
+        html += '<div style="margin-top:6px;font-size:10px;color:'+pcaC.dim+';">点击行＝跳转到编辑器对应位置；<span style="color:'+pcaC.migrate+';">➕</span>追加；<span style="color:'+pcaC.gold+';">📋</span>复制</div>';
+    }
+    refEl.innerHTML = html;
+}
+
+function pcaBindEditor() {
+    var doc = pcaGetDoc();
+    var ov = doc.querySelector('#pca-editor-overlay');
+    if (!ov) return;
+
+    // 字段面板视图时只绑字段联动
+    if (pcaState.editorState && pcaState.editorState.fieldsView) {
+        pcaEditorBindFieldsPanel();
+        return;
+    }
+
+    var ta = doc.querySelector('#pca-ed-textarea');
+    if (ta) {
+        ta.addEventListener('input', function() {
+            var es = pcaState.editorState;
+            if (!es) return;
+            pcaState.editorDrafts[es.entryId] = pcaState.editorDrafts[es.entryId] || {};
+            pcaState.editorDrafts[es.entryId][es.activeVersion] = ta.value;
+            pcaEditorUpdateStats();
+            pcaEditorSyncLinenumScroll();
+        });
+        ta.addEventListener('scroll', function() {
+            pcaEditorSyncLinenumScroll();
+        });
+        // 记录最近一次 selection，工具栏点击后焦点会被夺走，但 selection 仍然保留在 ta 上；
+        // 这里多做一层保险，用于 "复制" 兜底
+        var saveSel = function() {
+            try {
+                ta._pcaLastSelStart = ta.selectionStart;
+                ta._pcaLastSelEnd = ta.selectionEnd;
+            } catch(_e) {}
+        };
+        ta.addEventListener('keyup', saveSel);
+        ta.addEventListener('mouseup', saveSel);
+        ta.addEventListener('select', saveSel);
+        ta.addEventListener('blur', saveSel);
+        // textarea 尺寸变化（窗口 resize / 横竖屏切换）时重算行号映射
+        try {
+            if (typeof ResizeObserver !== 'undefined') {
+                var ro = new ResizeObserver(function(){ pcaEditorUpdateStats(); });
+                ro.observe(ta);
+                ta._pcaResizeObserver = ro;
+            }
+        } catch(_e) {}
+    }
+
+    // 工具栏按钮 mousedown 时记录 textarea 当前 selection（此刻焦点仍在 textarea 上），
+    // 但不要 preventDefault —— 否则部分浏览器会吞掉随后的 click 事件
+    var toolBar = ov.querySelectorAll('[data-pca-action]');
+    for (var ti = 0; ti < toolBar.length; ti++) {
+        toolBar[ti].addEventListener('mousedown', function() {
+            try {
+                var taX = doc.querySelector('#pca-ed-textarea');
+                if (taX) {
+                    taX._pcaLastSelStart = taX.selectionStart;
+                    taX._pcaLastSelEnd = taX.selectionEnd;
+                }
+            } catch(_e) {}
+        });
+    }
+
+    ov.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var target = e.target;
+        while (target && target !== ov) {
+            if (target.getAttribute && target.getAttribute('data-pca-action')) break;
+            target = target.parentElement;
+        }
+        if (!target || target === ov) return;
+        var action = target.getAttribute('data-pca-action');
+
+        switch(action) {
+            case 'ed-close':
+            case 'ed-cancel':
+                pcaCloseEditor(false);
+                break;
+            case 'ed-switch-ver':
+                var newVer = target.getAttribute('data-pca-ver');
+                var es1 = pcaState.editorState;
+                if (!es1 || es1.activeVersion === newVer) break;
+                var ta1 = doc.querySelector('#pca-ed-textarea');
+                if (ta1) {
+                    pcaState.editorDrafts[es1.entryId] = pcaState.editorDrafts[es1.entryId] || {};
+                    pcaState.editorDrafts[es1.entryId][es1.activeVersion] = ta1.value;
+                }
+                es1.activeVersion = newVer;
+                ov.querySelectorAll('.pca-ed-tab').forEach(function(t) {
+                    t.classList.toggle('active', t.getAttribute('data-pca-ver') === newVer);
+                });
+                pcaEditorRefreshContent();
+                break;
+            case 'ed-toggle-ref':
+                var es2 = pcaState.editorState;
+                if (!es2) break;
+                es2.referenceVisible = !es2.referenceVisible;
+                var refC = doc.querySelector('#pca-ed-ref-container');
+                if (refC) {
+                    refC.style.display = es2.referenceVisible ? 'flex' : 'none';
+                    refC.style.flex = es2.referenceVisible ? '1' : '0 0 0';
+                    refC.style.minHeight = es2.referenceVisible ? '120px' : '0';
+                }
+                target.textContent = es2.referenceVisible ? '🙈 隐藏参考' : '👁 显示参考';
+                if (es2.referenceVisible) pcaEditorRefreshReference();
+                break;
+            case 'ed-toggle-wrap':
+                pcaState.editorWrap = !(pcaState.editorWrap !== false);
+                try { localStorage.setItem(PCA_EDITOR_WRAP_KEY, pcaState.editorWrap ? '1' : '0'); } catch(e3) {}
+                var ta_w = doc.querySelector('#pca-ed-textarea');
+                if (ta_w) {
+                    var wrapNow = pcaState.editorWrap !== false;
+                    ta_w.setAttribute('wrap', wrapNow ? 'soft' : 'off');
+                    ta_w.style.setProperty('white-space', wrapNow ? 'pre-wrap' : 'pre', 'important');
+                    ta_w.style.setProperty('overflow-x', wrapNow ? 'hidden' : 'auto', 'important');
+                    ta_w.style.setProperty('word-break', wrapNow ? 'break-word' : 'normal', 'important');
+                }
+                target.textContent = (pcaState.editorWrap !== false) ? '🔁 自动换行' : '📐 不换行';
+                pcaEditorUpdateStats();
+                break;
+            case 'ed-toggle-fields':
+                pcaEditorToggleFieldsView();
+                break;
+            case 'ed-fields-newid':
+                var fldId = doc.querySelector('#pca-fld-id');
+                if (fldId && !fldId.readOnly) fldId.value = pcaGenEntryId();
+                break;
+            case 'ed-fields-reset':
+                pcaShowConfirm('重置为源预设原始字段值？当前未保存的字段修改会丢失。', function(ok){
+                    if (!ok) return;
+                    var es_r = pcaState.editorState; if (!es_r) return;
+                    es_r.fieldOverrides = pcaEditorBuildFieldDefaults(es_r.rawFields, es_r.leftEntry, null);
+                    pcaEditorRefreshFieldsPanelUI();
+                }, { yesText:'重置', noText:'取消', yesColor:pcaC.danger, yesColorDim:'#a04050' });
+                break;
+            case 'ed-fields-cancel':
+                pcaEditorToggleFieldsView();
+                break;
+            case 'ed-fields-save':
+                pcaEditorSaveFields();
+                break;
+            case 'ed-tool':
+                pcaEditorTool(target.getAttribute('data-pca-tool'));
+                break;
+            case 'ed-append-line':
+                e.stopPropagation();
+                var txt1 = target.getAttribute('data-pca-text') || '';
+                var dec1 = doc.createElement('div'); dec1.innerHTML = txt1;
+                pcaEditorAppendToTextarea(dec1.textContent);
+                break;
+            case 'ed-copy-text':
+                e.stopPropagation();
+                e.preventDefault();
+                var txt2 = target.getAttribute('data-pca-text') || '';
+                var lineText = '';
+                if (txt2) {
+                    var dec2 = doc.createElement('textarea'); dec2.innerHTML = txt2;
+                    lineText = dec2.value;
+                }
+                // 兜底：从父级 .pca-ed-ref-line 直接取最后一段 textContent（去掉行号、+ 号、按钮符号）
+                if (!lineText) {
+                    var parentLine = target.parentElement;
+                    while (parentLine && !parentLine.classList.contains('pca-ed-ref-line')) parentLine = parentLine.parentElement;
+                    if (parentLine) {
+                        var contentSpan = parentLine.querySelector('span[style*="flex:1"]');
+                        if (contentSpan) lineText = contentSpan.textContent || '';
+                    }
+                }
+                pcaLog('[ed-copy-text] len=' + (lineText ? lineText.length : 0));
+                if (!lineText) { pcaShowToast('warning', '该行内容为空'); break; }
+                // 暗存为编辑器粘贴源，让粘贴按钮可联动
+                pcaState.editorClipText = lineText;
+                pcaState.editorClipFrom = 'ref-line';
+                pcaCopyToClipboard(lineText, '已复制此行（可点📥粘贴）');
+                pcaEditorRefreshPasteHint();
+                break;
+            case 'ed-jump-line':
+                var jumpLine = parseInt(target.getAttribute('data-pca-jumpline')||'1', 10);
+                pcaEditorJumpToLine(jumpLine);
+                break;
+            case 'ed-confirm':
+                pcaEditorConfirm();
+                break;
+        }
+    });
+}
+
+// 刷新"粘贴按钮"高亮 + 来源提示文案（暗存内容变化时调）
+function pcaEditorRefreshPasteHint() {
+    try {
+        var doc = pcaGetDoc();
+        var btn = doc.querySelector('#pca-ed-paste-btn');
+        var hint = doc.querySelector('#pca-ed-paste-hint');
+        if (!btn || !hint) return;
+        var stash = pcaState.editorClipText || '';
+        if (stash) {
+            btn.style.background = 'linear-gradient(135deg,'+pcaC.migrate+','+pcaC.migrateDim+')';
+            btn.style.color = '#fff';
+            btn.style.borderColor = pcaC.migrateBorder || pcaC.migrate;
+            btn.style.fontWeight = '600';
+            var src = pcaState.editorClipFrom === 'ref-line' ? '参考行' :
+                      (pcaState.editorClipFrom === 'editor-sel' ? '编辑选区' :
+                      (pcaState.editorClipFrom === 'editor-all' ? '编辑全文' : '暗存'));
+            hint.style.display = '';
+            hint.textContent = '✓ 已暗存「' + src + '」' + stash.length + '字';
+            hint.style.color = pcaC.migrate;
+        } else {
+            btn.style.background = '';
+            btn.style.color = '';
+            btn.style.borderColor = '';
+            btn.style.fontWeight = '';
+            hint.style.display = 'none';
+            hint.textContent = '';
+        }
+    } catch(_e) {}
+}
+
+// 切换到字段视图 / 切回正文视图（原地显隐，避免重建 textarea / 行号镜像 / 监听器）
+function pcaEditorToggleFieldsView() {
+    var es = pcaState.editorState;
+    if (!es) return;
+    es.fieldsView = !es.fieldsView;
+    var doc = pcaGetDoc();
+    var ov = doc.querySelector('#pca-editor-overlay');
+    if (!ov) return;
+    var bodyEl = ov.querySelector('#pca-ed-body');
+    var tabsEl = ov.querySelector('#pca-ed-tabs-bar');
+    var toolEl = ov.querySelector('#pca-ed-toolbar');
+    var bottomEl = ov.querySelector('#pca-ed-bottom-bar');
+    var fieldsEl = ov.querySelector('#pca-ed-fields-panel');
+    var fieldsBottomEl = ov.querySelector('#pca-ed-fields-bottom');
+    // 切到字段视图：首次进入懒构建
+    if (es.fieldsView) {
+        if (!fieldsEl) {
+            // 从源 prompt 重新装填默认值（保证显示最新数据）
+            es.fieldOverrides = pcaEditorBuildFieldDefaults(es.rawFields, es.leftEntry, es.fieldOverrides);
+            // 字段面板 HTML 包含 panel + bottom bar 两块；插到 modal 末尾
+            var modal = ov.querySelector('.pca-ed-modal');
+            if (modal) {
+                var tmp = doc.createElement('div');
+                tmp.innerHTML = pcaBuildFieldsPanelHTML();
+                while (tmp.firstChild) modal.appendChild(tmp.firstChild);
+                pcaEditorBindFieldsPanel();
+            }
+            fieldsEl = ov.querySelector('#pca-ed-fields-panel');
+            fieldsBottomEl = ov.querySelector('#pca-ed-fields-bottom');
+        } else {
+            // 二次进入：刷新 UI 表现的初值（对齐 fieldOverrides）
+            pcaEditorRefreshFieldsPanelUI();
+        }
+        if (bodyEl) bodyEl.style.display = 'none';
+        if (tabsEl) tabsEl.style.display = 'none';
+        if (toolEl) toolEl.style.display = 'none';
+        if (bottomEl) bottomEl.style.display = 'none';
+        if (fieldsEl) fieldsEl.style.display = '';
+        if (fieldsBottomEl) fieldsBottomEl.style.display = '';
+    } else {
+        if (bodyEl) bodyEl.style.display = '';
+        if (tabsEl) tabsEl.style.display = '';
+        if (toolEl) toolEl.style.display = '';
+        if (bottomEl) bottomEl.style.display = '';
+        if (fieldsEl) fieldsEl.style.display = 'none';
+        if (fieldsBottomEl) fieldsBottomEl.style.display = 'none';
+    }
+    // 高亮按钮状态
+    var btn = ov.querySelector('[data-pca-action="ed-toggle-fields"]');
+    if (btn) {
+        if (es.fieldsView) { btn.style.color = pcaC.gold; btn.style.borderColor = pcaC.goldDim; }
+        else { btn.style.color = ''; btn.style.borderColor = ''; }
+    }
+}
+
+// 刷新字段面板表单的当前值（不重建 DOM）
+function pcaEditorRefreshFieldsPanelUI() {
+    var es = pcaState.editorState; if (!es) return;
+    var fo = es.fieldOverrides; if (!fo) return;
+    var doc = pcaGetDoc(); var ov = doc.querySelector('#pca-editor-overlay'); if (!ov) return;
+    function setVal(sel, v){ var el=ov.querySelector(sel); if(el && el.value!==undefined) el.value=v; }
+    function setCk(sel, v){ var el=ov.querySelector(sel); if(el && 'checked' in el) el.checked=!!v; }
+    setVal('#pca-fld-name', fo.name||'');
+    setVal('#pca-fld-id', fo.identifier||'');
+    setVal('#pca-fld-role', fo.role||'system');
+    setVal('#pca-fld-pos', String(fo.injection_position||0));
+    setVal('#pca-fld-depth', fo.injection_depth!=null?fo.injection_depth:4);
+    setVal('#pca-fld-order', fo.injection_order!=null?fo.injection_order:100);
+    var trigEnabled = Array.isArray(fo.injection_trigger);
+    setCk('#pca-fld-trig-enable', trigEnabled);
+    var list = ov.querySelector('#pca-fld-trig-list');
+    if (list) list.style.display = trigEnabled ? 'flex' : 'none';
+    ov.querySelectorAll('input[data-pca-trig]').forEach(function(cb){
+        cb.checked = trigEnabled && fo.injection_trigger.indexOf(cb.getAttribute('data-pca-trig')) >= 0;
+    });
+    setCk('#pca-fld-syspr', fo.system_prompt);
+    setCk('#pca-fld-marker', fo.marker);
+    setCk('#pca-fld-forbid', fo.forbid_overrides);
+}
+
+// 字段面板的"启用触发器"checkbox 联动 + 标签 checkbox 高亮联动
+function pcaEditorBindFieldsPanel() {
+    var doc = pcaGetDoc();
+    var ov = doc.querySelector('#pca-editor-overlay');
+    if (!ov) return;
+    var enable = ov.querySelector('#pca-fld-trig-enable');
+    var list = ov.querySelector('#pca-fld-trig-list');
+    if (enable && list) {
+        enable.addEventListener('change', function() {
+            list.style.display = enable.checked ? 'flex' : 'none';
+        });
+    }
+}
+
+// 读取 DOM 表单 → 写回 editorState.fieldOverrides → 切回正文视图
+function pcaEditorSaveFields() {
+    var es = pcaState.editorState;
+    if (!es) return;
+    var doc = pcaGetDoc();
+    var ov = doc.querySelector('#pca-editor-overlay');
+    if (!ov) return;
+    var fo = es.fieldOverrides;
+    var nameEl = ov.querySelector('#pca-fld-name');
+    var idEl = ov.querySelector('#pca-fld-id');
+    var roleEl = ov.querySelector('#pca-fld-role');
+    var posEl = ov.querySelector('#pca-fld-pos');
+    var depthEl = ov.querySelector('#pca-fld-depth');
+    var orderEl = ov.querySelector('#pca-fld-order');
+    var trigEnable = ov.querySelector('#pca-fld-trig-enable');
+    var sysEl = ov.querySelector('#pca-fld-syspr');
+    var markerEl = ov.querySelector('#pca-fld-marker');
+    var forbidEl = ov.querySelector('#pca-fld-forbid');
+
+    if (nameEl) {
+        var nv = (nameEl.value || '').trim();
+        if (!nv) { toastr.warning('名称不能为空'); return; }
+        fo.name = nv;
+    }
+    if (idEl && !idEl.readOnly) {
+        var iv = (idEl.value || '').trim();
+        if (!iv) { toastr.warning('ID 不能为空'); return; }
+        fo.identifier = iv;
+    }
+    if (roleEl) fo.role = roleEl.value;
+    if (posEl) fo.injection_position = parseInt(posEl.value, 10);
+    if (depthEl) {
+        var dv = parseInt(depthEl.value, 10);
+        if (isNaN(dv) || dv < 0) dv = 0;
+        fo.injection_depth = dv;
+    }
+    if (orderEl) {
+        var ov2 = parseInt(orderEl.value, 10);
+        if (isNaN(ov2)) ov2 = 100;
+        fo.injection_order = ov2;
+    }
+    if (trigEnable) {
+        if (trigEnable.checked) {
+            var arr = [];
+            ov.querySelectorAll('input[data-pca-trig]').forEach(function(cb){
+                if (cb.checked) arr.push(cb.getAttribute('data-pca-trig'));
+            });
+            fo.injection_trigger = arr;
+        } else {
+            fo.injection_trigger = null;
+        }
+    }
+    if (sysEl) fo.system_prompt = !!sysEl.checked;
+    if (markerEl) fo.marker = !!markerEl.checked;
+    if (forbidEl) fo.forbid_overrides = !!forbidEl.checked;
+
+    // 同步到 entry（本地编辑器视图）+ pending 项（如有）
+    es.leftEntry._fieldOverrides = JSON.parse(JSON.stringify(fo));
+    es.leftEntry.name = fo.name;
+    es.leftEntry.role = fo.role;
+    if (es.fromPendingIdx >= 0 && pcaState.migratePending[es.fromPendingIdx]) {
+        var p = pcaState.migratePending[es.fromPendingIdx];
+        p.fieldOverrides = JSON.parse(JSON.stringify(fo));
+        if (p.entry) {
+            p.entry._fieldOverrides = JSON.parse(JSON.stringify(fo));
+            p.entry.name = fo.name;
+            p.entry.role = fo.role;
+            // ID 改了 → 同步 entry.id（但保留 _origId 以便从源取字段）
+            if (idEl && !idEl.readOnly && p.entry.id !== fo.identifier) {
+                if (!p.entry._origId) p.entry._origId = p.entry.id;
+                p.entry.id = fo.identifier;
+            }
+        }
+    }
+    es.entryName = fo.name;
+    toastr.success('字段已保存');
+    // 同步标题文字（若 modal 头部显示了 entryName）
+    var titleEl = ov.querySelector('.pca-ed-modal > div:first-child div:nth-child(2)');
+    // 直接切回正文视图，使用原地显隐
+    es.fieldsView = true; // 让 toggle 把它切到 false
+    pcaEditorToggleFieldsView();
+}
+
+function pcaEditorTool(tool) {
+    var doc = pcaGetDoc();
+    var ta = doc.querySelector('#pca-ed-textarea');
+    if (!ta) return;
+    switch(tool) {
+        case 'selectall':
+            ta.focus();
+            ta.select();
+            break;
+        case 'copy':
+            try {
+                // 优先使用 mousedown 时记录的 selection（按钮 click 后焦点已转移）
+                var s0 = (typeof ta._pcaLastSelStart === 'number') ? ta._pcaLastSelStart : ta.selectionStart;
+                var e0 = (typeof ta._pcaLastSelEnd === 'number') ? ta._pcaLastSelEnd : ta.selectionEnd;
+                var hasSel = (s0 !== e0);
+                var textToCopy = hasSel ? ta.value.substring(s0, e0) : ta.value;
+                if (!textToCopy) { try { pcaShowToast('info', '无内容可复制'); } catch(_e2){} break; }
+                pcaState.editorClipText = textToCopy;
+                pcaState.editorClipFrom = hasSel ? 'editor-sel' : 'editor-all';
+                pcaCopyToClipboard(textToCopy, hasSel ? ('已复制选中文本（' + textToCopy.length + ' 字）') : ('已复制全部（' + textToCopy.length + ' 字）'));
+                pcaEditorRefreshPasteHint();
+                // 复制后把焦点和选区还原到 textarea，让用户继续看到"自己的选区"
+                setTimeout(function() {
+                    try {
+                        ta.focus({ preventScroll: true });
+                        ta.setSelectionRange(s0, e0);
+                        ta._pcaLastSelStart = s0;
+                        ta._pcaLastSelEnd = e0;
+                    } catch(_e4) {}
+                }, 0);
+            } catch(e) {
+                try { pcaShowToast('warning', '复制失败，请用 Ctrl+C'); } catch(_e3) {}
+            }
+            break;
+        case 'paste':
+            // 把光标先还原到记录的位置（手机用户尤其需要）
+            try {
+                var ps = (typeof ta._pcaLastSelStart === 'number') ? ta._pcaLastSelStart : ta.selectionStart;
+                var pe = (typeof ta._pcaLastSelEnd === 'number') ? ta._pcaLastSelEnd : ta.selectionEnd;
+                ta.focus({ preventScroll: true });
+                ta.setSelectionRange(ps, pe);
+            } catch(_ep) { ta.focus(); }
+            var winP = pcaGetWin();
+            var canReadClip = false;
+            try { canReadClip = !!(winP && winP.isSecureContext && winP.navigator && winP.navigator.clipboard && winP.navigator.clipboard.readText); } catch(_e) {}
+            var stash = pcaState.editorClipText || '';
+            var pasteFromStash = function(reason) {
+                if (stash) {
+                    pcaEditorInsertAtCursor(stash);
+                    pcaShowToast('success', '已粘贴脚本暗存内容（' + stash.length + ' 字）');
+                } else {
+                    pcaShowToast('info', reason || '剪贴板读取受限，请用 Ctrl+V 粘贴');
+                }
+            };
+            if (canReadClip) {
+                winP.navigator.clipboard.readText().then(function(text) {
+                    if (text && text.length) {
+                        pcaEditorInsertAtCursor(text);
+                        pcaShowToast('success', '已粘贴系统剪贴板（' + text.length + ' 字）');
+                    } else {
+                        pasteFromStash('剪贴板为空');
+                    }
+                }).catch(function() {
+                    pasteFromStash('剪贴板被拒，已用脚本暗存');
+                });
+            } else {
+                pasteFromStash('HTTP 环境无法读剪贴板，已用脚本暗存');
+            }
+            break;
+        case 'undo':
+            ta.focus();
+            try { doc.execCommand('undo'); } catch(e) {}
+            break;
+        case 'redo':
+            ta.focus();
+            try { doc.execCommand('redo'); } catch(e) {}
+            break;
+        case 'reset':
+            var es = pcaState.editorState;
+            if (!es) return;
+            pcaShowConfirm('还原当前版本到原始内容？<br><br>当前在编辑器内的修改将丢失。', function(ok) {
+                if (!ok) return;
+                pcaState.editorDrafts[es.entryId] = pcaState.editorDrafts[es.entryId] || {};
+                if (es.activeVersion === 'left') pcaState.editorDrafts[es.entryId].left = es.originalLeft;
+                else pcaState.editorDrafts[es.entryId].right = es.originalRight;
+                pcaEditorRefreshContent();
+                toastr.info('已还原');
+            }, { yesText:'还原', noText:'取消', yesColor:pcaC.danger, yesColorDim:'#a04050' });
+            break;
+    }
+}
+
+// 置信度说明气泡（点 × 或点空白处关闭）
+function pcaShowConfHelpPopover(anchorEl) {
+    var doc = pcaGetDoc();
+    var existing = doc.querySelector('#pca-conf-help-popover');
+    if (existing) { existing.remove(); return; }
+
+    var rect = anchorEl.getBoundingClientRect();
+    var pop = doc.createElement('div');
+    pop.id = 'pca-conf-help-popover';
+    pop.style.cssText = 'position:fixed;z-index:2147483647;background:'+pcaC.bg+';border:1px solid '+pcaC.goldDim+';border-radius:10px;padding:14px 18px;box-shadow:0 8px 32px rgba(0,0,0,0.6);width:min(340px,92vw);font-size:12px;color:'+pcaC.text+';line-height:1.7;pointer-events:auto;';
+
+    var html = '';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">';
+    html += '<span style="font-size:13px;font-weight:700;color:'+pcaC.gold+';">📍 智能定位置信度说明</span>';
+    html += '<span data-pca-action="conf-help-close" style="cursor:pointer;color:'+pcaC.dim+';font-size:16px;padding:0 4px;">×</span>';
+    html += '</div>';
+    html += '<div style="color:'+pcaC.dim+';margin-bottom:6px;">迁移条目时，脚本会根据"旧版前后邻居"在新版中的位置自动算出插入点：</div>';
+    html += '<div style="margin-bottom:4px;"><span style="color:'+pcaC.success+';font-weight:600;">🟢 高</span> &nbsp;前后邻居都在新版且顺序一致，定位非常可信。</div>';
+    html += '<div style="margin-bottom:4px;"><span style="color:'+pcaC.gold+';font-weight:600;">🟡 中</span> &nbsp;只有单边邻居，或前后邻居在新版中顺序与旧版冲突。建议复核。</div>';
+    html += '<div style="margin-bottom:8px;"><span style="color:'+pcaC.danger+';font-weight:600;">🔴 低</span> &nbsp;旧新版无任何共有邻居，已回落到顶部 / 末尾，<b>强烈建议手工 📍 调位置</b>。</div>';
+    html += '<div style="border-top:1px solid '+pcaC.border+';padding-top:8px;color:'+pcaC.dim+';font-size:11px;">点击队列项左侧的 📍 可手动选位置；点击行尾的 ✏️ 可编辑该条目内容；× 可移出队列。</div>';
+    pop.innerHTML = html;
+
+    // 关键修复：SillyTavern 的 popup 是 <dialog> 元素，使用浏览器 top-layer 渲染，
+    // 任何普通 body 子元素都会被它遮挡。必须把气泡也挂到 dialog 内部才能在它上面显示。
+    var hostDialog = doc.querySelector('dialog.popup[open]:has(#pca-root)')
+        || doc.querySelector('dialog.popup:has(#pca-root)')
+        || doc.querySelector('#pca-root');
+    var host = hostDialog || doc.body;
+    host.appendChild(pop);
+
+    // 测量后定位（让气泡在按钮上方显示，超出视口则改下方）
+    var ph = pop.offsetHeight, pw = pop.offsetWidth;
+    var top = rect.top - ph - 10;
+    if (top < 8) top = rect.bottom + 10;
+    var left = rect.left + rect.width / 2 - pw / 2;
+    if (left < 8) left = 8;
+    var maxLeft = (doc.documentElement.clientWidth || window.innerWidth) - pw - 8;
+    if (left > maxLeft) left = maxLeft;
+    pop.style.top = top + 'px';
+    pop.style.left = left + 'px';
+
+    // 点击空白处关闭
+    var closeHandler = function(e) {
+        if (!pop.contains(e.target)) {
+            pop.remove();
+            doc.removeEventListener('click', closeHandler, true);
+        }
+    };
+    setTimeout(function() { doc.addEventListener('click', closeHandler, true); }, 0);
+
+    // × 按钮
+    pop.addEventListener('click', function(e) {
+        var t = e.target;
+        if (t && t.getAttribute && t.getAttribute('data-pca-action') === 'conf-help-close') {
+            e.stopPropagation();
+            pop.remove();
+            doc.removeEventListener('click', closeHandler, true);
+        }
+    });
+}
+
+function pcaShowToast(type, msg) {
+    // 优先用顶层 window 的 toastr（因为脚本可能跑在 iframe 里，本地 window 可能没 toastr）
+    try {
+        var win = pcaGetWin();
+        var t = (win && win.toastr) ? win.toastr : ((typeof toastr !== 'undefined') ? toastr : null);
+        if (t && typeof t[type] === 'function') {
+            t[type](msg, '', { timeOut: 1500 });
+            return;
+        }
+    } catch(_e) {}
+    // 兜底：自己造一个浮动提示（贴到顶层 document）
+    try {
+        var doc = pcaGetDoc();
+        var box = doc.createElement('div');
+        var color = type === 'success' ? '#6ecf8a' : (type === 'warning' ? '#e0a070' : (type === 'error' ? '#e06070' : '#8eb8e5'));
+        box.textContent = msg;
+        box.style.cssText = 'position:fixed!important;left:50%!important;top:14%!important;transform:translateX(-50%)!important;background:rgba(20,18,28,0.95)!important;color:#fff!important;border:1px solid '+color+'!important;border-radius:8px!important;padding:8px 18px!important;font-size:13px!important;z-index:2147483647!important;box-shadow:0 4px 16px rgba(0,0,0,0.4)!important;pointer-events:none!important;';
+        doc.body.appendChild(box);
+        setTimeout(function(){ try { box.remove(); } catch(_e){} }, 1500);
+    } catch(_e2) {}
+}
+
+function pcaCopyToClipboard(text, successMsg) {
+    var doc = pcaGetDoc();
+    var win = pcaGetWin();
+    var ov = doc.querySelector('#pca-editor-overlay');
+    var container = ov || doc.body;
+    var safeText = (text == null) ? '' : String(text);
+
+    // 方法1：navigator.clipboard（HTTPS或localhost才行）
+    var canUseModern = false;
+    try {
+        canUseModern = !!(win && win.isSecureContext && win.navigator && win.navigator.clipboard && win.navigator.clipboard.writeText);
+    } catch(_e) { canUseModern = false; }
+    if (canUseModern) {
+        try {
+            win.navigator.clipboard.writeText(safeText).then(function() {
+                pcaShowToast('success', successMsg || '已复制');
+            }).catch(function(err) {
+                pcaLog('[clip] navigator.clipboard 失败: ' + (err && err.message) + '，回退');
+                pcaCopyFallback(safeText, successMsg, container, doc);
+            });
+            return;
+        } catch(_e) { pcaLog('[clip] navigator.clipboard 异常: ' + _e.message); }
+    }
+    pcaCopyFallback(safeText, successMsg, container, doc);
+}
+
+function pcaCopyFallback(text, successMsg, container, doc) {
+    var safeText = (text == null) ? '' : String(text);
+
+    // 方法 A：copy 事件 + clipboardData.setData —— 不依赖元素 focus，dialog 内成功率最高
+    var okA = false;
+    var handlerCalled = false;
+    try {
+        var handler = function(ev) {
+            handlerCalled = true;
+            try {
+                if (ev.clipboardData) {
+                    ev.clipboardData.setData('text/plain', safeText);
+                    ev.preventDefault();
+                    okA = true;
+                }
+            } catch(_e) {}
+        };
+        doc.addEventListener('copy', handler, true);
+        try { doc.execCommand('copy'); } catch(_eX) {}
+        doc.removeEventListener('copy', handler, true);
+        if (!(handlerCalled && okA)) okA = false;
+    } catch(_e) { okA = false; }
+
+    if (okA) {
+        pcaShowToast('success', successMsg || '已复制');
+        return;
+    }
+
+    // 方法 B：临时 textarea + execCommand('copy')（兜底）
+    var origTa = doc.querySelector('#pca-ed-textarea');
+    var origSelStart = -1, origSelEnd = -1;
+    if (origTa) {
+        try { origSelStart = origTa.selectionStart; origSelEnd = origTa.selectionEnd; } catch(_e) {}
+    }
+
+    var tryCopy = function(parent) {
+        var tmp = doc.createElement('textarea');
+        tmp.value = safeText;
+        tmp.setAttribute('readonly', '');
+        tmp.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;padding:0;border:0;margin:0;opacity:0.01;z-index:2147483647;';
+        parent.appendChild(tmp);
+        var ok2 = false;
+        try {
+            tmp.focus({ preventScroll: true });
+            tmp.select();
+            tmp.setSelectionRange(0, tmp.value.length);
+            ok2 = doc.execCommand && doc.execCommand('copy');
+        } catch(_e) { ok2 = false; }
+        try { tmp.remove(); } catch(_e2) {}
+        return !!ok2;
+    };
+
+    var ok = tryCopy(container || doc.body);
+    if (!ok && container && container !== doc.body) {
+        ok = tryCopy(doc.body);
+    }
+
+    // 恢复原编辑 textarea 的焦点与选区
+    if (origTa && origSelStart >= 0) {
+        try {
+            origTa.focus({ preventScroll: true });
+            origTa.setSelectionRange(origSelStart, origSelEnd);
+        } catch(_e3) {}
+    }
+
+    if (ok) {
+        pcaShowToast('success', successMsg || '已复制');
+    } else {
+        pcaShowToast('warning', '自动复制失败，请用 Ctrl+C 手动复制');
+    }
+}
+
+function pcaEditorInsertAtCursor(text) {
+    var doc = pcaGetDoc();
+    var ta = doc.querySelector('#pca-ed-textarea');
+    if (!ta) return;
+    var s = ta.selectionStart, e = ta.selectionEnd;
+    ta.value = ta.value.substring(0, s) + text + ta.value.substring(e);
+    ta.selectionStart = ta.selectionEnd = s + text.length;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function pcaEditorAppendToTextarea(text) {
+    var doc = pcaGetDoc();
+    var ta = doc.querySelector('#pca-ed-textarea');
+    if (!ta) return;
+    var sep = (ta.value && !ta.value.endsWith('\n')) ? '\n' : '';
+    ta.value = ta.value + sep + text;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    ta.focus();
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+    toastr.success('已追加 1 行', '', { timeOut: 1500 });
+}
+
+function pcaEditorJumpToLine(lineNum) {
+    var doc = pcaGetDoc();
+    var ta = doc.querySelector('#pca-ed-textarea');
+    if (!ta) return;
+    var lines = ta.value.split('\n');
+    if (lineNum < 1) lineNum = 1;
+    if (lineNum > lines.length) lineNum = lines.length;
+
+    // 计算光标位置（行首）
+    var pos = 0;
+    for (var i = 0; i < lineNum - 1; i++) {
+        pos += lines[i].length + 1; // +1 是 \n
+    }
+    var lineEnd = pos + (lines[lineNum-1] || '').length;
+
+    ta.focus();
+    ta.setSelectionRange(pos, lineEnd);
+
+    // 滚动到目标行：估算 line-height * 行号
+    var lineHeight = 14 * 1.6; // font-size 14, line-height 1.6
+    var targetScroll = (lineNum - 1) * lineHeight - ta.clientHeight / 3;
+    ta.scrollTop = Math.max(0, targetScroll);
+
+    // 同步行号滚动
+    var ln = doc.querySelector('#pca-ed-linenums');
+    if (ln) ln.scrollTop = ta.scrollTop;
+
+    toastr.info('已跳转到第 ' + lineNum + ' 行', '', {timeOut:1000});
+}
+
+function pcaEditorConfirm() {
+    var doc = pcaGetDoc();
+    var es = pcaState.editorState;
+    if (!es) return;
+    var ta = doc.querySelector('#pca-ed-textarea');
+    if (!ta) return;
+
+    // 同步最新草稿
+    pcaState.editorDrafts[es.entryId] = pcaState.editorDrafts[es.entryId] || {};
+    pcaState.editorDrafts[es.entryId][es.activeVersion] = ta.value;
+
+    var finalContent = ta.value;
+    var sourceEntry = JSON.parse(JSON.stringify(es.leftEntry));
+    sourceEntry.content = finalContent;
+
+    // 判断 edited 标志（相对于 left 原内容是否变化）
+    var edited = (finalContent !== es.originalLeft);
+
+    // 条目编辑模式：保存到 editPending（覆盖／新建），不走 migrate 流程
+    if (es.isEditTarget) {
+        var fo_e = es.fieldOverrides || null;
+        if (es.leftEntry._isNew) {
+            // 这是「新建空白条目」流程
+            pcaEditAddPending({
+                action:'new',
+                targetId: sourceEntry.id,
+                entryId: sourceEntry.id,
+                entryName: (fo_e && fo_e.name) || sourceEntry.name,
+                entry: sourceEntry,
+                fieldOverrides: fo_e,
+                insertIndex: pcaGetEditTargetEntries().length,
+            });
+        } else {
+            pcaEditAddPending({
+                action:'overwrite',
+                targetId: sourceEntry.id,
+                entryId: sourceEntry.id,
+                entryName: (fo_e && fo_e.name) || sourceEntry.name,
+                entry: sourceEntry,
+                fieldOverrides: fo_e,
+            });
+        }
+        pcaCloseEditor(true);
+        pcaRenderEdit();
+        toastr.success('已加入待修改队列：' + ((fo_e && fo_e.name) || sourceEntry.name));
+        return;
+    }
+
+    var pendingItem = es.fromPendingIdx >= 0 ? pcaState.migratePending[es.fromPendingIdx] : null;
+
+    if (pendingItem) {
+        // 更新已有队列项
+        pcaState.migrateUndoStack.push({
+            action: 'edit',
+            index: es.fromPendingIdx,
+            prevItem: JSON.parse(JSON.stringify(pendingItem))
+        });
+        pendingItem.entry.content = finalContent;
+        pendingItem._edited = edited;
+        pendingItem._editedFrom = es.activeVersion;
+        pcaCloseEditor(true);
+        pcaRenderMigrate();
+        toastr.success('已更新队列项：' + es.entryName);
+        return;
+    }
+
+    // 新加入队列
+    if (es.hasRight) {
+        // 目标已有：覆盖
+        pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });
+        pcaState.migratePending.push({
+            action: 'overwrite',
+            entry: sourceEntry,
+            targetId: es.rightEntry.id,
+            _edited: edited,
+            _editedFrom: es.activeVersion,
+        });
+        pcaCloseEditor(true);
+        pcaRenderMigrate();
+        toastr.success('已加入队列（覆盖·已编辑）：' + es.entryName);
+    } else {
+        // 目标未有：要选位置
+        pcaShowInsertPositionPicker(sourceEntry, function(pos, afterName) {
+            if (pos < 0) return;
+            pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });
+            pcaState.migratePending.push({
+                action: 'new',
+                entry: sourceEntry,
+                insertIndex: pos,
+                insertAfterName: afterName,
+                _edited: edited,
+                _editedFrom: es.activeVersion,
+            });
+            pcaCloseEditor(true);
+            pcaRenderMigrate();
+            toastr.success('已加入队列（新建·已编辑）：' + es.entryName);
+        });
+    }
+}
+
+// ============ 编辑器 END ============
+
+function pcaAddNote() {
+    var doc = pcaGetDoc();
+    var input = doc.querySelector('#pca-note-input');
+    if (!input) return;
+    var val = input.value.trim();
+    if (!val) return;
+    var gid = pcaState.activeFavGroupId || '';
+    var groupName = '未分组';
+    var existingArr;
+    if (gid) {
+        pcaLoadFavGroups();
+        var g = pcaState.migrateFavGroups[gid];
+        if (!g) { toastr.error('分组已不存在'); pcaState.activeFavGroupId = ''; pcaRenderMigrate(); return; }
+        groupName = g.name;
+        existingArr = g.notes || [];
+    } else {
+        existingArr = pcaState.migrateNotes || [];
+    }
+    var exists = false;
+    existingArr.forEach(function(n) { if (n === val) exists = true; });
+    if (exists) { toastr.warning('「'+groupName+'」中已存在'); return; }
+    pcaAddToFavGroup([val], gid);
+    input.value = '';
+    pcaRenderMigrate();
+    toastr.success('已收藏到「'+groupName+'」：' + val);
+}
+
+function pcaRefreshDebug() { var el=pcaQ('#pca-debug-log'); if(el){el.textContent=pcaLogs.join('\n');el.scrollTop=el.scrollHeight;} }
+
+async function pcaDoCompare() {
+    var doc=pcaGetDoc();
+    var leftSel=doc.querySelector('#pca-sel-left'),rightSel=doc.querySelector('#pca-sel-right');
+    if(!leftSel||!rightSel)return;
+    var ln=leftSel.value,rn=rightSel.value;
+    if(!ln||!rn){toastr.warning('请先选择左右两个预设');return;}
+    if(ln===rn){toastr.warning('不能选同一个预设');return;}
+    pcaLog('对比: "'+ln+'" vs "'+rn+'"');
+    var content=doc.querySelector('#pca-content');
+    if(content)content.innerHTML='<div style="text-align:center;padding:30px;color:'+pcaC.dim+';">⏳ 获取中…</div>';
+    var all=await pcaFetchAllPresets(); pcaRefreshDebug();
+    if(!all){if(content)content.innerHTML='<div style="text-align:center;padding:30px;color:'+pcaC.danger+';">❌ 获取失败</div>';return;}
+    pcaState.allPresets=all;
+    var leftData=pcaFindPreset(all,ln),rightData=pcaFindPreset(all,rn); pcaRefreshDebug();
+    if(!leftData){if(content)content.innerHTML='<div style="text-align:center;padding:30px;color:'+pcaC.danger+';">❌ 找不到左侧「'+pcaEsc(ln)+'」</div>';return;}
+    if(!rightData){if(content)content.innerHTML='<div style="text-align:center;padding:30px;color:'+pcaC.danger+';">❌ 找不到右侧「'+pcaEsc(rn)+'」</div>';return;}
+
+    var le=pcaExtract(leftData),re=pcaExtract(rightData);
+    var result=pcaCompare(le,re);
+
+    pcaState.leftName=ln;pcaState.rightName=rn;
+    pcaState.leftEntries=le;pcaState.rightEntries=re;
+    pcaState.diffs=result.diffs;pcaState.newItems=result.newItems;
+    pcaState.rightPresetData=rightData;
+    pcaState.leftPresetData=leftData;
+    pcaState.originalValues={};pcaState.compared=true;
+    pcaState.migratePending=[];pcaState.migrateUndoStack=[];
+    pcaState.migrateSearch='';pcaState.migrateSelected={};
+    pcaState.migrateFavActive=false;
+    pcaState.activeFavGroupId='';
+    pcaState.migrateFilterStatus='all';
+    pcaState.migrateFilterDiff='all';
+    pcaState.migrateQueueExpanded=false;
+    pcaState.editorDrafts={};
+    pcaState.editorState=null;
+
+    var tabs=doc.querySelector('#pca-tabs'),footer=doc.querySelector('#pca-footer');
+    if(tabs)tabs.style.display='flex';if(footer)footer.style.display='flex';
+    doc.querySelector('#pca-tab-diff').textContent='开关差异 ('+result.diffs.length+')';
+    pcaSwitchTab('diff');pcaRefreshDebug();
+    toastr.success('对比完成：'+result.diffs.length+' 差异，'+result.newItems.length+' 新增');
+}
+
+function pcaSwitchTab(tab) {
+    pcaState.activeTab=tab;var doc=pcaGetDoc();
+    var td=doc.querySelector('#pca-tab-diff'),tm=doc.querySelector('#pca-tab-migrate'),te=doc.querySelector('#pca-tab-edit');
+    if(td){td.style.borderBottomColor=tab==='diff'?pcaC.pink:'transparent';td.style.color=tab==='diff'?pcaC.pink:pcaC.dim;}
+    if(tm){tm.style.borderBottomColor=tab==='migrate'?pcaC.migrate:'transparent';tm.style.color=tab==='migrate'?pcaC.migrate:pcaC.dim;}
+    if(te){te.style.borderBottomColor=tab==='edit'?pcaC.gold:'transparent';te.style.color=tab==='edit'?pcaC.gold:pcaC.dim;}
+    var footer = doc.querySelector('#pca-footer');
+    if (footer) footer.style.display = (tab === 'migrate' || tab === 'edit') ? 'none' : 'flex';
+    var existingDock = doc.querySelector('#pca-queue-dock');
+    if (existingDock && tab !== 'migrate') existingDock.remove();
+    var existingEditDock = doc.querySelector('#pca-edit-dock');
+    if (existingEditDock && tab !== 'edit') existingEditDock.remove();
+    if(tab==='diff')pcaRenderDiffs();else if(tab==='migrate')pcaRenderMigrate();else if(tab==='edit')pcaRenderEdit();
+}
+
+async function pcaDoSave() {
+    if(!pcaState.compared){toastr.warning('请先对比');return;}
+    var name = pcaState.rightName;
+    var ok = await pcaSyncAndSave(pcaState.rightPresetData, name);
+    if (!ok) { toastr.error('保存失败'); pcaRefreshDebug(); return; }
+    toastr.success('已覆盖保存「'+name+'」✓');
+    pcaRefreshDebug();
+}
+
+async function pcaDoSaveAs() {
+    if(!pcaState.compared){toastr.warning('请先对比');return;}
+    var n=prompt('请输入新预设名称：',pcaState.rightName+'_修改版');
+    if(!n||!n.trim())return;
+    var ok=await pcaSavePresetToFile(pcaState.rightPresetData,n.trim());
+    if(ok){toastr.success('已另存为「'+n.trim()+'」');toastr.info('如列表未刷新请手动刷新页面');}
+    else toastr.error('保存失败');
+    pcaRefreshDebug();
+}
+
+function pcaDoSyncAll() {
+    if(!pcaState.compared)return;var c=0;
+    pcaState.diffs.forEach(function(d){
+        var cur=pcaGetEnabled(pcaState.rightPresetData,d.right.id);
+        if(cur!==d.left.enabled){
+            if(pcaState.originalValues[d.right.id]===undefined)pcaState.originalValues[d.right.id]=d.right.enabled;
+            pcaSetEnabled(pcaState.rightPresetData,d.right.id,d.left.enabled);c++;
+        }
+    });
+    pcaRenderDiffs();toastr.success('已同步 '+c+' 个');
+}
+
+function pcaDoMigrateAdd(entryIdx, opts) {
+    opts = opts || {};
+    if (entryIdx < 0 || entryIdx >= pcaState.leftEntries.length) { toastr.error('索引无效'); return; }
+    var entry = pcaState.leftEntries[entryIdx];
+    var alreadyPending = false;
+    pcaState.migratePending.forEach(function(p) { if (p.entry.id === entry.id) alreadyPending = true; });
+    if (alreadyPending) { if (!opts.silent) toastr.warning('已在队列中'); return; }
+
+    var rightEntries = pcaExtract(pcaState.rightPresetData);
+    var sameNameEntry = null;
+    rightEntries.forEach(function(re) { if (re.name === entry.name) sameNameEntry = re; });
+
+    if (sameNameEntry) {
+        // forceManualPos === true 时跳过覆盖判断，强制让用户挑位置（高级入口）
+        if (opts.forceManualPos) {
+            pcaShowInsertPositionPicker(entry, function(pos, afterName) {
+                if (pos < 0) return;
+                pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });
+                pcaState.migratePending.push({ action:'new', entry:JSON.parse(JSON.stringify(entry)), insertIndex:pos, insertAfterName:afterName, confidence:'high', posWarn:'' });
+                pcaRenderMigrate();
+                toastr.success('已添加新建：' + entry.name);
+            });
+            return;
+        }
+        pcaShowConfirm(
+            '⚠️ 目标预设中已存在同名条目：<br><br><span style="color:'+pcaC.gold+';font-weight:600;">「'+pcaEsc(entry.name)+'」</span><br><br>是否加入覆盖到队列？（需点击「应用并保存」才真正生效）',
+            function(confirmed) {
+                if (confirmed) {
+                    pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });
+                    pcaState.migratePending.push({ action:'overwrite', entry:JSON.parse(JSON.stringify(entry)), targetId:sameNameEntry.id });
+                    pcaRenderMigrate();
+                    toastr.success('已添加覆盖：' + entry.name);
+                }
+            },
+            { yesText:'加入覆盖队列', noText:'取消' }
+        );
+        return;
+    }
+
+    // 没有同名条目：默认走"智能定位"，不再弹位置选择器
+    if (opts.forceManualPos) {
+        pcaShowInsertPositionPicker(entry, function(pos, afterName) {
+            if (pos < 0) return;
+            pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });
+            pcaState.migratePending.push({ action:'new', entry:JSON.parse(JSON.stringify(entry)), insertIndex:pos, insertAfterName:afterName, confidence:'high', posWarn:'' });
+            pcaRenderMigrate();
+            toastr.success('已添加新建：' + entry.name);
+        });
+        return;
+    }
+    var resolved = pcaResolveSamePosition(entry, pcaState.leftEntries, rightEntries);
+    pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });
+    pcaState.migratePending.push({
+        action:'new',
+        entry: JSON.parse(JSON.stringify(entry)),
+        insertIndex: resolved.insertIndex,
+        insertAfterName: resolved.insertAfterName || '',
+        insertBeforeName: resolved.insertBeforeName || '',
+        confidence: resolved.confidence,
+        posWarn: resolved.warn || ''
+    });
+    pcaRenderMigrate();
+    if (!opts.silent) {
+        var msg = '已添加：' + entry.name;
+        if (resolved.confidence === 'low') msg += '（位置不确定）';
+        toastr.success(msg);
+    }
+}
+
+// 复制为新条目：保留目标已有那条，再生成新 ID 作为独立新条目入队列
+function pcaDoMigrateAddAsNew(entryIdx) {
+    if (entryIdx < 0 || entryIdx >= pcaState.leftEntries.length) { toastr.error('索引无效'); return; }
+    var entry = pcaState.leftEntries[entryIdx];
+    // 深拷贝并替换 ID（保留所有其他字段，记录原 ID 方便后续从源预设取完整字段）
+    var clone = JSON.parse(JSON.stringify(entry));
+    clone._origId = entry.id;
+    clone.id = pcaGenEntryId();
+    // 入队列前确认 id 不冲突（已在 pending 或 right）
+    var rightEntries = pcaExtract(pcaState.rightPresetData);
+    var conflict = false;
+    rightEntries.forEach(function(re){ if (re.id === clone.id) conflict = true; });
+    pcaState.migratePending.forEach(function(p){ if (p.entry.id === clone.id) conflict = true; });
+    var safeGuard = 0;
+    while (conflict && safeGuard < 5) {
+        clone.id = pcaGenEntryId();
+        conflict = false;
+        rightEntries.forEach(function(re){ if (re.id === clone.id) conflict = true; });
+        pcaState.migratePending.forEach(function(p){ if (p.entry.id === clone.id) conflict = true; });
+        safeGuard++;
+    }
+    if (conflict) { toastr.error('生成 ID 冲突，请重试'); return; }
+    // 智能定位（按原条目在左侧的相对位置推导）
+    var resolved = pcaResolveSamePosition(entry, pcaState.leftEntries, rightEntries);
+    pcaState.migrateUndoStack.push({ action:'add', index:pcaState.migratePending.length });
+    pcaState.migratePending.push({
+        action:'new',
+        entry: clone,
+        insertIndex: resolved.insertIndex,
+        insertAfterName: resolved.insertAfterName || '',
+        insertBeforeName: resolved.insertBeforeName || '',
+        confidence: resolved.confidence,
+        posWarn: resolved.warn || ''
+    });
+    pcaRenderMigrate();
+    toastr.success('已添加为新条目（新 ID）：' + clone.name);
+}
+
+// ========== 批量智能迁移 ==========
+// 弹出"同名冲突一次性确认"对话框
+function pcaShowBatchConflictDialog(conflicts, callback) {
+    var doc = pcaGetDoc();
+    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');
+    var html = '<div class="pca-modal-overlay" id="pca-batch-conflict-overlay">';
+    html += '<div style="background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:560px;max-width:96vw;max-height:80vh;max-height:80dvh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);">';
+    html += '<div style="padding:14px 20px;border-bottom:1px solid '+pcaC.border+';flex-shrink:0;">';
+    html += '<div style="font-size:15px;font-weight:700;color:'+pcaC.gold+';margin-bottom:4px;">⚠ 检测到 '+conflicts.length+' 个同名条目</div>';
+    html += '<div style="font-size:12px;color:'+pcaC.dim+';">勾选要"覆盖"目标的条目，未勾选的将被"跳过"</div>';
+    html += '</div>';
+    html += '<div style="flex:1;overflow-y:auto;padding:10px 16px;">';
+    html += '<div style="display:flex;gap:8px;margin-bottom:10px;">';
+    html += '<span data-pca-action="bcf-all-yes" style="font-size:11px;color:'+pcaC.gold+';border:1px solid '+pcaC.goldDim+';border-radius:6px;padding:3px 10px;">全部覆盖</span>';
+    html += '<span data-pca-action="bcf-all-no" style="font-size:11px;color:'+pcaC.dim+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;">全部跳过</span>';
+    html += '</div>';
+    conflicts.forEach(function(c, ci) {
+        html += '<div data-pca-action="bcf-toggle" data-pca-idx="'+ci+'" id="pca-bcf-row-'+ci+'" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid '+pcaC.border+';border-radius:6px;margin-bottom:5px;background:'+pcaC.card+';">';
+        html += '<span id="pca-bcf-mark-'+ci+'" style="font-size:16px;color:'+pcaC.gold+';flex-shrink:0;">☑</span>';
+        html += '<span style="font-size:12px;color:'+pcaC.text+';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+pcaEsc(c.entry.name)+'</span>';
+        html += '<span style="font-size:10px;color:'+pcaC.dim+';flex-shrink:0;">目标已存在</span>';
+        html += '</div>';
+    });
+    html += '</div>';
+    html += '<div style="padding:12px 20px;border-top:1px solid '+pcaC.border+';display:flex;justify-content:flex-end;gap:10px;flex-shrink:0;">';
+    html += '<button data-pca-action="bcf-cancel" class="pca-modal-btn">取消整批</button>';
+    html += '<button data-pca-action="bcf-confirm" class="pca-modal-btn-primary">确认批量迁移</button>';
+    html += '</div></div></div>';
+
+    var overlay = doc.createElement('div');
+    overlay.innerHTML = html;
+    var overlayEl = overlay.firstChild;
+    if (existingDialog) existingDialog.appendChild(overlayEl); else doc.body.appendChild(overlayEl);
+
+    var states = conflicts.map(function() { return true; }); // 默认全部覆盖
+    function refreshRow(ci) {
+        var mark = doc.querySelector('#pca-bcf-mark-' + ci);
+        var row = doc.querySelector('#pca-bcf-row-' + ci);
+        if (!mark || !row) return;
+        if (states[ci]) {
+            mark.textContent = '☑'; mark.style.color = pcaC.gold;
+            row.style.background = 'rgba(212,168,83,0.06)';
+        } else {
+            mark.textContent = '☐'; mark.style.color = pcaC.dim;
+            row.style.background = pcaC.card;
+        }
+    }
+
+    overlayEl.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var thisOverlay = doc.querySelector('#pca-batch-conflict-overlay');
+        var t = e.target;
+        while (t && t !== thisOverlay) {
+            if (t.getAttribute && t.getAttribute('data-pca-action')) break;
+            t = t.parentElement;
+        }
+        if (!t) return;
+        var act = t.getAttribute('data-pca-action');
+        if (act === 'bcf-cancel') { thisOverlay.remove(); callback(null); return; }
+        if (act === 'bcf-confirm') {
+            thisOverlay.remove();
+            var decisions = states.map(function(s, i) { return { entry: conflicts[i].entry, targetId: conflicts[i].targetId, overwrite: s }; });
+            callback(decisions);
+            return;
+        }
+        if (act === 'bcf-all-yes') { for (var i = 0; i < states.length; i++) { states[i] = true; refreshRow(i); } return; }
+        if (act === 'bcf-all-no') { for (var j = 0; j < states.length; j++) { states[j] = false; refreshRow(j); } return; }
+        if (act === 'bcf-toggle') {
+            var idx = parseInt(t.getAttribute('data-pca-idx'), 10);
+            if (!isNaN(idx) && idx >= 0 && idx < states.length) {
+                states[idx] = !states[idx];
+                refreshRow(idx);
+            }
+        }
+    });
+}
+
+// 批量智能迁移：对当前已选条目按"每个独立智能定位"处理
+function pcaDoBatchMigrate() {
+    var sel = pcaState.migrateSelected || {};
+    var selectedIds = Object.keys(sel).filter(function(k) { return sel[k]; });
+    if (selectedIds.length === 0) { toastr.warning('请先勾选条目'); return; }
+
+    // 收集已经在队列里的，跳过
+    var pendingIds = {};
+    pcaState.migratePending.forEach(function(p) { pendingIds[p.entry.id] = true; });
+
+    // 把已选项映射回 leftEntries 索引
+    var queue = []; // { entry, leftIdx, sameNameTarget|null }
+    var rightEntries = pcaExtract(pcaState.rightPresetData);
+    var rightByName = {};
+    rightEntries.forEach(function(re) { rightByName[re.name] = re; });
+
+    selectedIds.forEach(function(eid) {
+        for (var li = 0; li < pcaState.leftEntries.length; li++) {
+            var le = pcaState.leftEntries[li];
+            if (le.id !== eid) continue;
+            if (pendingIds[le.id]) return; // 已在队列
+            var sameName = rightByName[le.name] || null;
+            queue.push({ entry: le, leftIdx: li, sameName: sameName });
+            break;
+        }
+    });
+
+    if (queue.length === 0) { toastr.info('没有需要新增的条目（可能都已在队列中）'); return; }
+
+    // 拆分：同名冲突 vs 直接新建
+    var conflicts = [];
+    var newOnes = [];
+    queue.forEach(function(q) {
+        if (q.sameName) conflicts.push({ entry: q.entry, targetId: q.sameName.id });
+        else newOnes.push(q);
+    });
+
+    function applyNewOnes(extraOverwrites) {
+        var addedNew = 0, addedOver = 0, lowConf = 0;
+        // 先处理覆盖
+        if (extraOverwrites && extraOverwrites.length) {
+            extraOverwrites.forEach(function(d) {
+                pcaState.migrateUndoStack.push({ action:'add', index: pcaState.migratePending.length });
+                pcaState.migratePending.push({ action:'overwrite', entry: JSON.parse(JSON.stringify(d.entry)), targetId: d.targetId });
+                addedOver++;
+            });
+        }
+        // 处理新建：用智能定位
+        newOnes.forEach(function(q) {
+            var resolved = pcaResolveSamePosition(q.entry, pcaState.leftEntries, rightEntries);
+            if (resolved.confidence === 'low') lowConf++;
+            pcaState.migrateUndoStack.push({ action:'add', index: pcaState.migratePending.length });
+            pcaState.migratePending.push({
+                action: 'new',
+                entry: JSON.parse(JSON.stringify(q.entry)),
+                insertIndex: resolved.insertIndex,
+                insertAfterName: resolved.insertAfterName || '',
+                insertBeforeName: resolved.insertBeforeName || '',
+                confidence: resolved.confidence,
+                posWarn: resolved.warn || ''
+            });
+            addedNew++;
+        });
+        // 清空选择
+        pcaState.migrateSelected = {};
+        pcaRenderMigrate();
+        var msg = '已加入队列：' + addedNew + ' 新建';
+        if (addedOver) msg += '、' + addedOver + ' 覆盖';
+        if (lowConf) msg += '（其中 ' + lowConf + ' 项位置不确定，请检查队列）';
+        toastr.success(msg);
+    }
+
+    if (conflicts.length === 0) {
+        applyNewOnes([]);
+        return;
+    }
+    pcaShowBatchConflictDialog(conflicts, function(decisions) {
+        if (decisions === null) { toastr.info('已取消批量迁移'); return; }
+        var overwrites = decisions.filter(function(d) { return d.overwrite; });
+        applyNewOnes(overwrites);
+    });
+}
+
+async function pcaDoMigrateApply() {
+    if (pcaState.migratePending.length === 0) { toastr.warning('队列为空'); return; }
+    pcaLog('应用迁移 ' + pcaState.migratePending.length + ' 个');
+    var preset = pcaState.rightPresetData;
+    var appliedCount = 0;
+
+    pcaState.migratePending.forEach(function(p) {
+        if (p.action === 'overwrite') {
+            var prompts = preset.prompts || [];
+            for (var i = 0; i < prompts.length; i++) {
+                if (prompts[i].name === p.entry.name || prompts[i].identifier === p.targetId) {
+                    prompts[i].content = p.entry.content || '';
+                    prompts[i].role = p.entry.role || prompts[i].role;
+                    // 应用字段编辑覆写（仅写明确改动的字段，避免破坏目标其他字段）
+                    var foOv = p.fieldOverrides || (p.entry && p.entry._fieldOverrides) || null;
+                    if (foOv) {
+                        if (typeof foOv.name === 'string' && foOv.name) prompts[i].name = foOv.name;
+                        if (typeof foOv.role === 'string') prompts[i].role = foOv.role;
+                        if (typeof foOv.injection_position === 'number') prompts[i].injection_position = foOv.injection_position;
+                        if (typeof foOv.injection_depth === 'number') prompts[i].injection_depth = foOv.injection_depth;
+                        if (typeof foOv.injection_order === 'number') prompts[i].injection_order = foOv.injection_order;
+                        if (Array.isArray(foOv.injection_trigger)) {
+                            prompts[i].injection_trigger = foOv.injection_trigger.slice();
+                        } else if (foOv.injection_trigger === null && Object.prototype.hasOwnProperty.call(prompts[i], 'injection_trigger')) {
+                            delete prompts[i].injection_trigger;
+                        }
+                        if (typeof foOv.system_prompt === 'boolean') prompts[i].system_prompt = foOv.system_prompt;
+                        if (typeof foOv.marker === 'boolean') prompts[i].marker = foOv.marker;
+                        if (typeof foOv.forbid_overrides === 'boolean') prompts[i].forbid_overrides = foOv.forbid_overrides;
+                    }
+                    break;
+                }
+            }
+            var order = pcaGetOrder(preset.prompt_order);
+            for (var j = 0; j < order.length; j++) {
+                if (order[j].identifier === p.targetId) { order[j].enabled = p.entry.enabled; break; }
+            }
+            appliedCount++;
+        }
+    });
+
+    var newEntries = [];
+    pcaState.migratePending.forEach(function(p) { if (p.action === 'new') newEntries.push(p); });
+    newEntries.sort(function(a, b) { return b.insertIndex - a.insertIndex; });
+    newEntries.forEach(function(p) {
+        pcaMigrateInsertEntry(preset, p.entry, p.insertIndex);
+        appliedCount++;
+    });
+
+    var name = pcaState.rightName;
+    var ok = await pcaSyncAndSave(preset, name);
+    if (!ok) { toastr.error('保存失败'); pcaRefreshDebug(); return; }
+
+    toastr.success('已迁移 ' + appliedCount + ' 个条目到「' + name + '」✓');
+    pcaState.migratePending = [];
+    pcaState.migrateUndoStack = [];
+    pcaState.rightEntries = pcaExtract(preset);
+    var result = pcaCompare(pcaState.leftEntries, pcaState.rightEntries);
+    pcaState.diffs = result.diffs;
+    pcaState.newItems = result.newItems;
+    var doc = pcaGetDoc();
+    if (doc.querySelector('#pca-tab-diff')) doc.querySelector('#pca-tab-diff').textContent = '开关差异 ('+result.diffs.length+')';
+    pcaRenderMigrate();
+    pcaRefreshDebug();
+}
+
+// ========== 条目编辑模块：应用并保存 ==========
+async function pcaDoEditApply() {
+    if (pcaState.editPending.length === 0) { toastr.warning('队列为空'); return; }
+    var preset = pcaGetEditTargetPreset();
+    if (!preset) { toastr.error('找不到目标预设'); return; }
+    var presetName = pcaGetEditTargetName();
+    pcaLog('应用编辑 ' + pcaState.editPending.length + ' 个 to ' + presetName);
+    var appliedCount = 0;
+    var prompts = preset.prompts || (preset.prompts = []);
+    var order = pcaGetOrder(preset.prompt_order);
+
+    // 顺序执行：toggle / overwrite / delete / new / reorder
+    pcaState.editPending.forEach(function(p) {
+        try {
+            if (p.action === 'toggle') {
+                for (var i = 0; i < order.length; i++) {
+                    if (order[i].identifier === p.targetId) { order[i].enabled = !!p.enabled; appliedCount++; break; }
+                }
+            } else if (p.action === 'overwrite') {
+                for (var k = 0; k < prompts.length; k++) {
+                    if (prompts[k].identifier === p.targetId) {
+                        prompts[k].content = (p.entry && p.entry.content) || '';
+                        var fo = p.fieldOverrides || null;
+                        if (fo) {
+                            if (typeof fo.name === 'string' && fo.name) prompts[k].name = fo.name;
+                            if (typeof fo.role === 'string') prompts[k].role = fo.role;
+                            if (typeof fo.injection_position === 'number') prompts[k].injection_position = fo.injection_position;
+                            if (typeof fo.injection_depth === 'number') prompts[k].injection_depth = fo.injection_depth;
+                            if (typeof fo.injection_order === 'number') prompts[k].injection_order = fo.injection_order;
+                            if (Array.isArray(fo.injection_trigger)) prompts[k].injection_trigger = fo.injection_trigger.slice();
+                            else if (fo.injection_trigger === null && Object.prototype.hasOwnProperty.call(prompts[k], 'injection_trigger')) delete prompts[k].injection_trigger;
+                            if (typeof fo.system_prompt === 'boolean') prompts[k].system_prompt = fo.system_prompt;
+                            if (typeof fo.marker === 'boolean') prompts[k].marker = fo.marker;
+                            if (typeof fo.forbid_overrides === 'boolean') prompts[k].forbid_overrides = fo.forbid_overrides;
+                        }
+                        appliedCount++;
+                        break;
+                    }
+                }
+            } else if (p.action === 'delete') {
+                for (var di = prompts.length - 1; di >= 0; di--) {
+                    if (prompts[di].identifier === p.targetId) { prompts.splice(di, 1); break; }
+                }
+                for (var dj = order.length - 1; dj >= 0; dj--) {
+                    if (order[dj].identifier === p.targetId) { order.splice(dj, 1); break; }
+                }
+                appliedCount++;
+            } else if (p.action === 'new') {
+                var fo2 = p.fieldOverrides || null;
+                var newPrompt = {
+                    identifier: (fo2 && fo2.identifier) || p.entry.id,
+                    name: (fo2 && fo2.name) || p.entry.name || '新条目',
+                    content: (p.entry && p.entry.content) || '',
+                    role: (fo2 && fo2.role) || (p.entry && p.entry.role) || 'system',
+                    marker: false,
+                    system_prompt: false,
+                    forbid_overrides: false,
+                };
+                if (fo2) {
+                    if (typeof fo2.injection_position === 'number') newPrompt.injection_position = fo2.injection_position;
+                    if (typeof fo2.injection_depth === 'number') newPrompt.injection_depth = fo2.injection_depth;
+                    if (typeof fo2.injection_order === 'number') newPrompt.injection_order = fo2.injection_order;
+                    if (Array.isArray(fo2.injection_trigger)) newPrompt.injection_trigger = fo2.injection_trigger.slice();
+                    if (typeof fo2.system_prompt === 'boolean') newPrompt.system_prompt = fo2.system_prompt;
+                    if (typeof fo2.marker === 'boolean') newPrompt.marker = fo2.marker;
+                    if (typeof fo2.forbid_overrides === 'boolean') newPrompt.forbid_overrides = fo2.forbid_overrides;
+                }
+                prompts.push(newPrompt);
+                var insIdx = (typeof p.insertIndex === 'number') ? p.insertIndex : order.length;
+                if (insIdx < 0) insIdx = 0;
+                if (insIdx > order.length) insIdx = order.length;
+                order.splice(insIdx, 0, { identifier: newPrompt.identifier, enabled: !!(p.entry && p.entry.enabled) });
+                appliedCount++;
+            } else if (p.action === 'reorder') {
+                var fromI = -1;
+                for (var ri = 0; ri < order.length; ri++) {
+                    if (order[ri].identifier === p.targetId) { fromI = ri; break; }
+                }
+                if (fromI >= 0) {
+                    var item = order.splice(fromI, 1)[0];
+                    var to = p.newIndex;
+                    if (to < 0) to = 0;
+                    if (to > order.length) to = order.length;
+                    order.splice(to, 0, item);
+                    appliedCount++;
+                }
+            }
+        } catch (err) {
+            pcaLog('应用单项失败: ' + (err && err.message));
+        }
+    });
+
+    preset.prompts = prompts;
+    if (preset.prompt_order && Array.isArray(preset.prompt_order)) {
+        preset.prompt_order.forEach(function(po) { if (po && Array.isArray(po.order)) {} });
+    }
+
+    var ok = await pcaSyncAndSave(preset, presetName);
+    pcaRefreshDebug();
+    if (!ok) { toastr.error('保存失败'); return; }
+
+    toastr.success('已应用 ' + appliedCount + ' 个修改到「' + presetName + '」✓');
+    pcaState.editPending = [];
+    pcaState.editUndoStack = [];
+    // 刷新条目列表（左/右）
+    if (pcaState.editTarget === 'left') pcaState.leftEntries = pcaExtract(preset);
+    else pcaState.rightEntries = pcaExtract(preset);
+    var result = pcaCompare(pcaState.leftEntries, pcaState.rightEntries);
+    pcaState.diffs = result.diffs;
+    pcaState.newItems = result.newItems;
+    var doc = pcaGetDoc();
+    if (doc.querySelector('#pca-tab-diff')) doc.querySelector('#pca-tab-diff').textContent = '开关差异 ('+result.diffs.length+')';
+    pcaRenderEdit();
+}
+
+function pcaOpenPanel() {
+    pcaInjectCSS();
+    pcaLoadNotes();
+    pcaLoadFavGroups();
+    var names=pcaGetPresetNames();
+    var html=pcaBuildHTML(names);
+    var savedNotes = pcaState.migrateNotes || [];
+    pcaState={leftName:'',rightName:'',leftEntries:[],rightEntries:[],diffs:[],newItems:[],rightPresetData:null,leftPresetData:null,originalValues:{},activeTab:'diff',compared:false,allPresets:null,migrateSearch:'',migrateSelected:{},migrateNotes:savedNotes,migrateFavActive:false,migratePending:[],migrateUndoStack:[],migrateFilterStatus:'all',migrateFilterDiff:'all',migrateQueueExpanded:false,migrateFavGroups:(pcaState&&pcaState.migrateFavGroups)||{},activeFavGroupId:(pcaState&&pcaState.activeFavGroupId)||'',confHelpExpanded:false,editorClipText:(pcaState&&pcaState.editorClipText)||'',editorClipFrom:(pcaState&&pcaState.editorClipFrom)||'',editorState:null,editorDrafts:{},editorWrap:(pcaState&&typeof pcaState.editorWrap==='boolean')?pcaState.editorWrap:true,editTarget:'right',editPending:[],editUndoStack:[],editSearch:'',editOnlyNew:false,editQueueExpanded:false};
+    try {
+        var popup=new SillyTavern.Popup(html,SillyTavern.POPUP_TYPE.TEXT,'',{large:true,wide:true,allowVerticalScrolling:true});
+        popup.show();
+        setTimeout(function(){pcaBindPanel();},200);
+        return;
+    } catch(e) {}
+    var doc=pcaGetDoc();var old=doc.querySelector('#pca-overlay');if(old)old.remove();
+    var ov=doc.createElement('div');ov.id='pca-overlay';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;';
+    ov.innerHTML=html;ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});
+    doc.body.appendChild(ov);pcaBindPanel();
+}
+
+function pcaBindPanel() {
+    var doc=pcaGetDoc();var root=doc.querySelector('#pca-root');if(!root)return;
+    if(root.getAttribute('data-pca-bound'))return;
+    root.setAttribute('data-pca-bound','1');
+
+    // 主题切换
+    var themeSel = root.querySelector('#pca-theme-select');
+    if (themeSel) {
+        themeSel.addEventListener('change', function(){
+            var v = themeSel.value;
+            // 重新打开面板让所有内联样式重新计算（最简单可靠的方式）
+            pcaApplyTheme(v, { rerender:false });
+            // 关闭当前面板再打开
+            var dlg = doc.querySelector('dialog.popup:has(#pca-root)');
+            var savedState = pcaState;
+            // 关闭可能存在的子浮层（编辑器、收藏夹、确认框、说明气泡），避免孤儿引用
+            var stale = ['#pca-editor-overlay','#pca-fav-picker-overlay','#pca-fav-mgr-overlay','#pca-insert-overlay','#pca-confirm-overlay','#pca-conf-help-popover'];
+            stale.forEach(function(sel){ var el = doc.querySelector(sel); if (el) el.remove(); });
+            if (savedState) savedState.editorState = null;
+            if (dlg) { try { dlg.close(); } catch(ex) {} dlg.remove(); }
+            var ov = doc.querySelector('#pca-overlay'); if (ov) ov.remove();
+            // 重新打开
+            pcaInjectCSS();
+            var names = pcaGetPresetNames();
+            var html = pcaBuildHTML(names);
+            try {
+                var popup = new SillyTavern.Popup(html, SillyTavern.POPUP_TYPE.TEXT, '', {large:true, wide:true, allowVerticalScrolling:true});
+                popup.show();
+                setTimeout(function(){
+                    // 还原 state 与 UI
+                    pcaState = savedState;
+                    pcaBindPanel();
+                    if (pcaState.compared) {
+                        // 还原下拉选择
+                        var ls = doc.querySelector('#pca-sel-left'); if (ls && pcaState.leftName) ls.value = pcaState.leftName;
+                        var rs = doc.querySelector('#pca-sel-right'); if (rs && pcaState.rightName) rs.value = pcaState.rightName;
+                        var tabs = doc.querySelector('#pca-tabs'); if (tabs) tabs.style.display = 'block';
+                        var footer = doc.querySelector('#pca-footer'); if (footer) footer.style.display = 'flex';
+                        pcaSwitchTab(pcaState.activeTab || 'diff');
+                    }
+                }, 200);
+            } catch(e) {}
+        });
+    }
+
+    root.addEventListener('click', function(e) {
+        var currentRoot=doc.querySelector('#pca-root');
+        var target=e.target;
+        while(target&&target!==currentRoot){if(target.getAttribute&&target.getAttribute('data-pca-action'))break;target=target.parentElement;}
+        if(!target||target===currentRoot)return;
+
+        var action=target.getAttribute('data-pca-action');
+        var idx=parseInt(target.getAttribute('data-pca-idx')||'-1',10);
+        var side=target.getAttribute('data-pca-side')||'';
+
+        switch(action){
+            case 'close':
+                var doClose = function() {
+                    var edOv = doc.querySelector('#pca-editor-overlay');
+                    if (edOv) edOv.remove();
+                    pcaState.editorState = null;
+                    var dlg=doc.querySelector('dialog.popup:has(#pca-root)');
+                    if(dlg){try{dlg.close();}catch(ex){}dlg.remove();return;}
+                    var ov=doc.querySelector('#pca-overlay');if(ov)ov.remove();
+                };
+                if (pcaState.migratePending.length > 0) {
+                    pcaShowConfirm(
+                        '⚠️ 待迁移队列中还有 <span style="color:'+pcaC.migrate+';font-weight:600;">'+pcaState.migratePending.length+'</span> 个未保存的条目<br><br>关闭后将丢失这些待迁移项，确定关闭吗？',
+                        function(confirmed) { if (confirmed) doClose(); },
+                        { yesText:'丢弃并关闭', noText:'继续编辑', yesColor:pcaC.danger, yesColorDim:'#a04050' }
+                    );
+                } else {
+                    doClose();
+                }
+                break;
+            case 'compare':pcaDoCompare();break;
+            case 'debug-toggle':
+                var area=doc.querySelector('#pca-debug-area');
+                if(area){area.style.display=area.style.display==='none'?'block':'none';pcaRefreshDebug();}
+                break;
+            case 'tab-diff':pcaSwitchTab('diff');break;
+            case 'tab-edit':pcaSwitchTab('edit');break;
+            case 'edit-target':
+                var sd = target.getAttribute('data-pca-side');
+                if (sd === 'left' || sd === 'right') {
+                    if (pcaState.editTarget !== sd && pcaState.editPending.length > 0) {
+                        pcaShowConfirm('切换目标会清空当前「待修改队列」（'+pcaState.editPending.length+' 项），确定？', function(ok){
+                            if (!ok) return;
+                            pcaState.editTarget = sd;
+                            pcaState.editPending = [];
+                            pcaState.editUndoStack = [];
+                            pcaRenderEdit();
+                        }, { yesText:'切换并清空', noText:'取消', yesColor:pcaC.danger, yesColorDim:'#a04050' });
+                    } else {
+                        pcaState.editTarget = sd;
+                        pcaRenderEdit();
+                    }
+                }
+                break;
+            case 'edit-new-entry': pcaEditDoNewEntry(); break;
+            case 'edit-toggle': if (idx >= 0) pcaEditDoToggle(idx); break;
+            case 'edit-edit': if (idx >= 0) pcaEditDoEdit(idx); break;
+            case 'edit-delete': if (idx >= 0) pcaEditDoDelete(idx); break;
+            case 'edit-move':
+                if (idx >= 0) {
+                    var dir = target.getAttribute('data-pca-dir');
+                    var entries_em = pcaGetEditTargetEntries();
+                    var to = (dir === 'up') ? idx - 1 : idx + 1;
+                    if (to >= 0 && to < entries_em.length) pcaEditMoveTo(idx, to);
+                }
+                break;
+            case 'edit-pending-remove':
+                if (idx >= 0 && idx < pcaState.editPending.length) {
+                    pcaState.editPending.splice(idx, 1);
+                    pcaRenderEdit();
+                }
+                break;
+            case 'edit-undo':
+                if (pcaState.editUndoStack.length > 0) {
+                    var last = pcaState.editUndoStack.pop();
+                    if (last.action === 'add' && last.index < pcaState.editPending.length) {
+                        pcaState.editPending.splice(last.index, 1);
+                    }
+                    pcaRenderEdit();
+                }
+                break;
+            case 'edit-clear':
+                pcaShowConfirm('清空整个待修改队列？', function(ok){
+                    if (!ok) return;
+                    pcaState.editPending = [];
+                    pcaState.editUndoStack = [];
+                    pcaRenderEdit();
+                }, { yesText:'清空', noText:'取消', yesColor:pcaC.danger, yesColorDim:'#a04050' });
+                break;
+            case 'edit-apply':
+                pcaDoEditApply();
+                break;
+            case 'edit-queue-toggle':
+                pcaState.editQueueExpanded = !pcaState.editQueueExpanded;
+                pcaRenderEdit();
+                break;
+            case 'tab-migrate':pcaSwitchTab('migrate');break;
+            case 'syncall':pcaDoSyncAll();break;
+            case 'save':pcaDoSave();break;
+            case 'saveas':pcaDoSaveAs();break;
+
+            case 'sync':
+                if(idx>=0&&pcaState.diffs[idx]){
+                    var d=pcaState.diffs[idx];
+                    if(pcaState.originalValues[d.right.id]===undefined)pcaState.originalValues[d.right.id]=d.right.enabled;
+                    pcaSetEnabled(pcaState.rightPresetData,d.right.id,d.left.enabled);
+                    pcaRenderDiffs();
+                }
+                break;
+            case 'revert':
+                if(idx>=0&&pcaState.diffs[idx]){
+                    var dr=pcaState.diffs[idx];
+                    pcaSetEnabled(pcaState.rightPresetData,dr.right.id,dr.right.enabled);
+                    delete pcaState.originalValues[dr.right.id];
+                    pcaRenderDiffs();
+                }
+                break;
+            case 'toggle':
+                if(idx>=0&&pcaState.diffs[idx]){
+                    var dt=pcaState.diffs[idx];
+                    if(pcaState.originalValues[dt.right.id]===undefined)pcaState.originalValues[dt.right.id]=dt.right.enabled;
+                    var cur=pcaGetEnabled(pcaState.rightPresetData,dt.right.id);
+                    pcaSetEnabled(pcaState.rightPresetData,dt.right.id,!cur);
+                    pcaRenderDiffs();
+                }
+                break;
+            case 'toggle-new':
+                // 兼容老入口；新逻辑在条目编辑面板里
+                if(idx>=0&&pcaState.newItems[idx]){
+                    var ni=pcaState.newItems[idx];
+                    var cn=pcaGetEnabled(pcaState.rightPresetData,ni.right.id);
+                    pcaSetEnabled(pcaState.rightPresetData,ni.right.id,!cn);
+                }
+                break;
+
+            case 'view':
+                if(idx>=0&&pcaState.diffs[idx]){
+                    var el=doc.querySelector('#pca-pv-'+idx);if(!el)break;
+                    if(el.style.display!=='none'&&el.getAttribute('data-side')===side){el.style.display='none';break;}
+                    var dv=pcaState.diffs[idx];
+                    el.setAttribute('data-side',side);el.style.display='block';
+                    if(side==='diff'){
+                        el.innerHTML=pcaRenderDiffHTML(dv.left.content,dv.right.content);
+                    } else {
+                        var cnt=side==='left'?dv.left.content:dv.right.content;
+                        var lbl=side==='left'?'左侧(旧)':'右侧(新)';
+                        el.innerHTML='<div style="background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:8px;padding:10px 14px;max-height:250px;overflow-y:auto;font-size:12px;line-height:1.6;color:'+pcaC.dim+';white-space:pre-wrap;word-break:break-all;"><div style="color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;">['+lbl+'] 内容：</div>'+(cnt?pcaEsc(cnt):'<span style="color:#555;">（空内容）</span>')+'</div>';
+                    }
+                }
+                break;
+            case 'view-new':
+                if(idx>=0&&pcaState.newItems[idx]){
+                    var elN=doc.querySelector('#pca-pvn-'+idx);if(!elN)break;
+                    if(elN.style.display!=='none'){elN.style.display='none';break;}
+                    var cntN=pcaState.newItems[idx].right.content;
+                    elN.style.display='block';
+                    elN.innerHTML='<div style="background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:8px;padding:10px 14px;max-height:250px;overflow-y:auto;font-size:12px;line-height:1.6;color:'+pcaC.dim+';white-space:pre-wrap;word-break:break-all;"><div style="color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;">内容：</div>'+(cntN?pcaEsc(cntN):'<span style="color:#555;">（空内容 / 标记类条目）</span>')+'</div>';
+                }
+                break;
+
+            case 'migrate-edit':
+                if (idx >= 0 && idx < pcaState.leftEntries.length) {
+                    pcaOpenEditor(pcaState.leftEntries[idx]);
+                }
+                break;
+            case 'migrate-edit-pending':
+                if (idx >= 0 && idx < pcaState.migratePending.length) {
+                    var pendingP = pcaState.migratePending[idx];
+                    // 找到对应的 leftEntry 作为编辑基准
+                    var srcEntry = null;
+                    for (var spi = 0; spi < pcaState.leftEntries.length; spi++) {
+                        if (pcaState.leftEntries[spi].id === pendingP.entry.id) {
+                            srcEntry = pcaState.leftEntries[spi];
+                            break;
+                        }
+                    }
+                    if (srcEntry) pcaOpenEditor(srcEntry);
+                    else toastr.error('找不到原始条目');
+                }
+                break;
+
+            case 'migrate-add':
+                if (idx >= 0) pcaDoMigrateAdd(idx);
+                break;
+            case 'migrate-add-as-new':
+                if (idx >= 0) pcaDoMigrateAddAsNew(idx);
+                break;
+            case 'batch-toggle':
+                var btId = target.getAttribute('data-pca-entry-id');
+                if (btId) {
+                    if (!pcaState.migrateSelected) pcaState.migrateSelected = {};
+                    if (pcaState.migrateSelected[btId]) delete pcaState.migrateSelected[btId];
+                    else pcaState.migrateSelected[btId] = true;
+                    pcaRenderMigrate();
+                }
+                break;
+            case 'batch-select-all':
+                if (!pcaState.migrateSelected) pcaState.migrateSelected = {};
+                var visIds = pcaGetVisibleLeftEntryIds();
+                visIds.forEach(function(id) { pcaState.migrateSelected[id] = true; });
+                pcaRenderMigrate();
+                break;
+            case 'batch-invert':
+                if (!pcaState.migrateSelected) pcaState.migrateSelected = {};
+                var visIds2 = pcaGetVisibleLeftEntryIds();
+                visIds2.forEach(function(id) {
+                    if (pcaState.migrateSelected[id]) delete pcaState.migrateSelected[id];
+                    else pcaState.migrateSelected[id] = true;
+                });
+                pcaRenderMigrate();
+                break;
+            case 'batch-clear':
+                pcaState.migrateSelected = {};
+                pcaRenderMigrate();
+                break;
+            case 'batch-migrate':
+                pcaDoBatchMigrate();
+                break;
+            case 'conf-help-popover':
+                pcaShowConfHelpPopover(target);
+                break;
+            case 'batch-fav':
+                // P4 预留：调用收藏夹分组选择器
+                var bfSel = pcaState.migrateSelected || {};
+                var bfNames = [];
+                Object.keys(bfSel).forEach(function(eid) {
+                    if (!bfSel[eid]) return;
+                    for (var bi = 0; bi < pcaState.leftEntries.length; bi++) {
+                        if (pcaState.leftEntries[bi].id === eid) { bfNames.push(pcaState.leftEntries[bi].name); break; }
+                    }
+                });
+                if (bfNames.length === 0) { toastr.warning('请先勾选条目'); break; }
+                pcaRenderFavGroupPicker(bfNames, function(_groupId) {});
+                break;
+            case 'migrate-repos':
+                if (idx >= 0 && idx < pcaState.migratePending.length) {
+                    var pItem = pcaState.migratePending[idx];
+                    if (pItem.action !== 'new') { toastr.info('覆盖类条目无需选位置'); break; }
+                    pcaShowInsertPositionPicker(pItem.entry, function(pos, afterName) {
+                        if (pos < 0) return;
+                        pcaState.migrateUndoStack.push({ action:'edit', index:idx, prevItem: JSON.parse(JSON.stringify(pItem)) });
+                        pItem.insertIndex = pos;
+                        pItem.insertAfterName = afterName || '';
+                        pItem.insertBeforeName = '';
+                        pItem.confidence = 'high';
+                        pItem.posWarn = '';
+                        pcaRenderMigrate();
+                        toastr.success('位置已更新');
+                    });
+                }
+                break;
+            case 'migrate-remove':
+                if (idx >= 0 && pcaState.migratePending[idx]) {
+                    pcaState.migrateUndoStack.push({ action:'remove', item:JSON.parse(JSON.stringify(pcaState.migratePending[idx])), index:idx });
+                    pcaState.migratePending.splice(idx, 1);
+                    pcaRenderMigrate();
+                }
+                break;
+            case 'migrate-undo':
+                if (pcaState.migrateUndoStack.length > 0) {
+                    var undoItem = pcaState.migrateUndoStack.pop();
+                    if (undoItem.action === 'add') {
+                        if (undoItem.index < pcaState.migratePending.length) pcaState.migratePending.splice(undoItem.index, 1);
+                    } else if (undoItem.action === 'remove') {
+                        pcaState.migratePending.splice(undoItem.index, 0, undoItem.item);
+                    } else if (undoItem.action === 'edit') {
+                        if (undoItem.index < pcaState.migratePending.length) {
+                            pcaState.migratePending[undoItem.index] = undoItem.prevItem;
+                        }
+                    }
+                    pcaRenderMigrate();
+                    toastr.info('已撤销');
+                }
+                break;
+            case 'migrate-clear':
+                pcaState.migrateUndoStack = [];
+                pcaState.migratePending = [];
+                pcaRenderMigrate();
+                toastr.info('已清空队列');
+                break;
+            case 'migrate-apply':
+                pcaDoMigrateApply();
+                break;
+            case 'migrate-preview':
+                if (idx >= 0 && idx < pcaState.leftEntries.length) {
+                    var mpEl = doc.querySelector('#pca-mpv-' + idx);
+                    if (!mpEl) break;
+                    if (mpEl.style.display !== 'none') { mpEl.style.display = 'none'; break; }
+                    var mEntry = pcaState.leftEntries[idx];
+                    mpEl.style.display = 'block';
+                    mpEl.innerHTML = '<div style="background:'+pcaC.input+';border:1px solid '+pcaC.border+';border-radius:8px;padding:10px 14px;max-height:200px;overflow-y:auto;font-size:12px;line-height:1.6;color:'+pcaC.dim+';white-space:pre-wrap;word-break:break-all;"><div style="color:'+pcaC.gold+';font-size:11px;margin-bottom:6px;font-weight:600;">内容：</div>'+(mEntry.content?pcaEsc(mEntry.content):'<span style="color:#555;">（空内容）</span>')+'</div>';
+                }
+                break;
+            case 'migrate-clear-filter':
+                pcaState.migrateSearch = '';
+                pcaState.migrateFavActive = false;
+                pcaState.migrateFilterStatus = 'all';
+                pcaState.migrateFilterDiff = 'all';
+                pcaState.activeFavGroupId = '';
+                pcaRenderMigrate();
+                break;
+
+            case 'note-add':
+                pcaAddNote();
+                break;
+            case 'note-del':
+                (function() {
+                    var gidD = pcaState.activeFavGroupId || '';
+                    var arrD;
+                    if (gidD) {
+                        pcaLoadFavGroups();
+                        var gD = pcaState.migrateFavGroups[gidD];
+                        if (!gD) return;
+                        arrD = gD.notes || [];
+                    } else {
+                        arrD = pcaState.migrateNotes || [];
+                    }
+                    if (idx < 0 || idx >= arrD.length) return;
+                    var nameD = arrD[idx];
+                    pcaRemoveFromFavGroup(nameD, gidD);
+                    pcaRenderMigrate();
+                    toastr.info('已移除：' + nameD);
+                })();
+                break;
+            case 'note-find':
+                (function() {
+                    var gidF = pcaState.activeFavGroupId || '';
+                    var arrF;
+                    if (gidF) {
+                        pcaLoadFavGroups();
+                        var gF = pcaState.migrateFavGroups[gidF];
+                        if (!gF) return;
+                        arrF = gF.notes || [];
+                    } else {
+                        arrF = pcaState.migrateNotes || [];
+                    }
+                    if (idx < 0 || idx >= arrF.length) return;
+                    pcaState.migrateSearch = arrF[idx];
+                    pcaState.migrateFavActive = false;
+                    pcaRenderMigrate();
+                })();
+                break;
+            case 'fav-tab-pick':
+                pcaState.activeFavGroupId = target.getAttribute('data-pca-gid') || '';
+                pcaRenderMigrate();
+                break;
+            case 'fav-mgr-open':
+                pcaRenderFavGroupManager();
+                break;
+            case 'queue-toggle':
+                pcaState.migrateQueueExpanded = !pcaState.migrateQueueExpanded;
+                pcaRenderMigrate();
+                break;
+            case 'filter-status':
+                pcaState.migrateFilterStatus = target.getAttribute('data-pca-val') || 'all';
+                pcaRenderMigrate();
+                break;
+            case 'filter-diff':
+                pcaState.migrateFilterDiff = target.getAttribute('data-pca-val') || 'all';
+                pcaRenderMigrate();
+                break;
+            case 'migrate-diff':
+                if (idx >= 0 && idx < pcaState.leftEntries.length) {
+                    var dEl = doc.querySelector('#pca-mpv-' + idx);
+                    if (!dEl) break;
+                    if (dEl.style.display !== 'none' && dEl.getAttribute('data-mode') === 'diff') { dEl.style.display = 'none'; break; }
+                    var lEnt = pcaState.leftEntries[idx];
+                    var rEnt = null;
+                    pcaState.rightEntries.forEach(function(re) { if (re.id === lEnt.id || re.name === lEnt.name) rEnt = re; });
+                    dEl.setAttribute('data-mode', 'diff');
+                    dEl.style.display = 'block';
+                    dEl.innerHTML = pcaRenderDiffHTML(rEnt ? rEnt.content : '', lEnt.content);
+                }
+                break;
+            case 'fav-toggle-all':
+                pcaState.migrateFavActive = !pcaState.migrateFavActive;
+                if (pcaState.migrateFavActive) pcaState.migrateSearch = '';
+                pcaRenderMigrate();
+                if (pcaState.migrateFavActive) {
+                    var favNamesNow = pcaGetActiveFavNames();
+                    var favLabel = pcaState.activeFavGroupId
+                        ? ((pcaState.migrateFavGroups[pcaState.activeFavGroupId] && pcaState.migrateFavGroups[pcaState.activeFavGroupId].name) || '?')
+                        : '未分组';
+                    toastr.info('已按「'+favLabel+'」筛选 ' + favNamesNow.length + ' 个条目');
+                }
+                break;
+        }
+    });
+}
+
+pcaSetupButton();
+pcaLoadNotes();
+pcaLoadFavGroups();
+pcaLog('v2.7 就绪');
