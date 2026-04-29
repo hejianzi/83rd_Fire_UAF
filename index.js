@@ -17,7 +17,7 @@ var pcaThemes = {
             primaryDim:'#6e1626',  // 深血红（渐变末端 / 边框）
             accent:'#a8243a',      // 焦血红（hover 提亮，仍属暗红）
             accentDim:'#6e1626',
-            text:'#ece8f4',        // 微紫白（贝利尔发色）
+            text:'#ece8f4',        // 微紫白
             textDim:'#7a7388',     // 中紫灰
             textOff:'#3a3540',     // 失效灰紫
             danger:'#c54052',      // 错误（比 primary 略亮以区分）
