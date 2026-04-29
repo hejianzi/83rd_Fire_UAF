@@ -1366,9 +1366,10 @@ function pcaRenderEdit() {
             html += '<input type="number" min="1" max="'+entries.length+'" value="'+(idx+1)+'" style="width:50px;padding:2px 4px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:3px;font-size:11px;text-align:center;outline:none;" data-pca-edit-jump="'+idx+'" title="输入序号回车跳转" />';
             html += '<button data-pca-action="edit-move" data-pca-idx="'+idx+'" data-pca-dir="down" class="pca-btn" style="padding:2px 8px;font-size:11px;" title="下移一位">↓</button>';
             html += '</div>';
-            // 编辑 / 删除（启用切换已通过滑块开关在 name 左侧实现）
-            html += '<div style="display:flex;gap:4px;">';
+            // 编辑 / 复制 / 删除（启用切换已通过滑块开关在 name 左侧实现）
+            html += '<div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">';
             html += '<button data-pca-action="edit-edit" data-pca-idx="'+idx+'" class="pca-btn" style="padding:3px 10px;font-size:11px;color:'+pcaC.gold+';border-color:'+pcaC.goldDim+';">✏️ 编辑</button>';
+            html += '<button data-pca-action="edit-clone" data-pca-idx="'+idx+'" class="pca-btn" style="padding:3px 10px;font-size:11px;color:'+pcaC.info+';border-color:'+pcaC.infoDim+';" title="复制本条目作为新增条目">📋 复制</button>';
             html += '<button data-pca-action="edit-delete" data-pca-idx="'+idx+'" class="pca-btn pca-btn-danger" style="padding:3px 10px;font-size:11px;">🗑 删</button>';
             html += '</div>';
             html += '</div>';
@@ -1590,6 +1591,218 @@ function pcaEditDoNewEntry() {
         _isNew: true,
     };
     pcaOpenEditor(newEntry, { isEditTarget: true });
+}
+
+// 队列：复制本条目作为新增条目
+// 弹出对话框，让用户编辑名字 + ID，并选择插入位置（默认放到本条目下面）。
+// 提交后只入 editPending（action:'new'），不打开内容编辑器；用户若想改正文，可在队列里再次「✏️」打开编辑。
+function pcaEditDoClone(idx) {
+    var entries = pcaGetEditTargetEntries();
+    if (idx < 0 || idx >= entries.length) return;
+    var sourceEntry = entries[idx];
+    // 从目标预设取原始 prompt（含完整字段），用于克隆所有注入位置/深度等元数据
+    var preset = pcaGetEditTargetPreset();
+    var rawPrompt = null;
+    if (preset && Array.isArray(preset.prompts)) {
+        for (var i = 0; i < preset.prompts.length; i++) {
+            if (preset.prompts[i] && preset.prompts[i].identifier === sourceEntry.id) { rawPrompt = preset.prompts[i]; break; }
+        }
+    }
+    pcaShowCloneEntryDialog(sourceEntry, rawPrompt, idx, function(result) {
+        if (!result) return; // 用户取消
+        // 构造 new 条目
+        var clonedEntry = {
+            id: result.newId,
+            name: result.newName,
+            enabled: !!sourceEntry.enabled,
+            content: (rawPrompt && typeof rawPrompt.content === 'string') ? rawPrompt.content : (sourceEntry.content || ''),
+            role: (rawPrompt && rawPrompt.role) || sourceEntry.role || 'system',
+            marker: !!(rawPrompt && rawPrompt.marker),
+            _isNew: true,
+        };
+        // 字段覆写：从 rawPrompt 复制完整字段，把 identifier/name 改成新值
+        var fieldOverrides = null;
+        if (rawPrompt) {
+            fieldOverrides = {
+                identifier: result.newId,
+                name: result.newName,
+                role: rawPrompt.role,
+            };
+            if (typeof rawPrompt.injection_position === 'number') fieldOverrides.injection_position = rawPrompt.injection_position;
+            if (typeof rawPrompt.injection_depth === 'number') fieldOverrides.injection_depth = rawPrompt.injection_depth;
+            if (typeof rawPrompt.injection_order === 'number') fieldOverrides.injection_order = rawPrompt.injection_order;
+            if (Array.isArray(rawPrompt.injection_trigger)) fieldOverrides.injection_trigger = rawPrompt.injection_trigger.slice();
+            if (typeof rawPrompt.system_prompt === 'boolean') fieldOverrides.system_prompt = rawPrompt.system_prompt;
+            if (typeof rawPrompt.marker === 'boolean') fieldOverrides.marker = rawPrompt.marker;
+            if (typeof rawPrompt.forbid_overrides === 'boolean') fieldOverrides.forbid_overrides = rawPrompt.forbid_overrides;
+        }
+        pcaEditAddPending({
+            action: 'new',
+            targetId: result.newId,
+            entryId: result.newId,
+            entryName: result.newName,
+            entry: clonedEntry,
+            fieldOverrides: fieldOverrides,
+            insertIndex: result.insertIndex,
+        });
+        pcaRenderEdit();
+        toastr.success('已加入新建队列：' + result.newName + '（位置 #' + (result.insertIndex + 1) + '）');
+    });
+}
+
+// 复制条目对话框：模态形式，左上角 name / id 可编辑，下方两种位置模式
+function pcaShowCloneEntryDialog(sourceEntry, rawPrompt, sourceIdx, callback) {
+    var doc = pcaGetDoc();
+    // 状态局部变量（不污染 pcaState）
+    var st = {
+        newName: (sourceEntry.name || '新条目') + ' - 副本',
+        newId: pcaGenEntryId(),
+        // posMode: 'below' = 插入到本条下面；'pick' = 用户在列表中选位置
+        posMode: 'below',
+        // 当 posMode='pick' 时，pickedIndex 表示插入到第几位（0=最顶部，N=末尾）
+        pickedIndex: sourceIdx + 1,
+    };
+    var entries = pcaGetEditTargetEntries();
+
+    var existingDialog = doc.querySelector('dialog.popup:has(#pca-root)');
+    var overlay = doc.createElement('div');
+    overlay.id = 'pca-clone-overlay';
+    overlay.className = 'pca-modal-overlay';
+
+    function render() {
+        var html = '';
+        html += '<div style="background:'+pcaC.bg+';border:1px solid '+pcaC.border+';border-radius:14px;width:min(560px,96vw);max-height:min(86vh,820px);max-height:min(86dvh,820px);display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 40px rgba(0,0,0,0.6);">';
+        // 头
+        html += '<div style="padding:14px 20px;border-bottom:1px solid '+pcaC.border+';flex-shrink:0;">';
+        html += '<div style="font-size:15px;font-weight:700;color:'+pcaC.info+';margin-bottom:6px;">📋 复制条目为新增</div>';
+        html += '<div style="font-size:12px;color:'+pcaC.dim+';word-break:break-word;">源条目：<span style="color:'+pcaC.text+';">'+pcaEsc(sourceEntry.name)+'</span></div>';
+        html += '</div>';
+        // 主体（可滚动）
+        html += '<div style="flex:1;min-height:0;overflow-y:auto;padding:14px 20px;">';
+        // 名称
+        html += '<div style="margin-bottom:14px;">';
+        html += '<div style="font-size:11px;color:'+pcaC.dim+';margin-bottom:5px;font-weight:600;">📛 新条目名称（name）</div>';
+        html += '<input id="pca-clone-name" type="text" value="'+pcaAttr(st.newName)+'" style="width:100%;padding:7px 10px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;font-size:13px;outline:none;box-sizing:border-box;font-family:inherit;" />';
+        html += '</div>';
+        // ID
+        html += '<div style="margin-bottom:14px;">';
+        html += '<div style="font-size:11px;color:'+pcaC.dim+';margin-bottom:5px;font-weight:600;">🆔 新条目 ID（identifier）</div>';
+        html += '<div style="display:flex;gap:6px;">';
+        html += '<input id="pca-clone-id" type="text" value="'+pcaAttr(st.newId)+'" style="flex:1;padding:7px 10px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;font-size:12px;outline:none;font-family:'+pcaC._fontMono+';box-sizing:border-box;" />';
+        html += '<button data-pca-action="clone-newid" class="pca-btn" style="padding:5px 12px;font-size:11px;flex-shrink:0;" title="重新生成随机 UUID">🎲 新 ID</button>';
+        html += '</div>';
+        html += '<div style="font-size:10px;color:'+pcaC.dim+';margin-top:4px;line-height:1.4;">默认随机生成；如目标预设里已有同 ID 条目会发生覆盖，建议保持随机</div>';
+        html += '</div>';
+        // 位置模式
+        html += '<div style="margin-top:18px;padding-top:14px;border-top:1px dashed '+pcaC.border+';">';
+        html += '<div style="font-size:11px;color:'+pcaC.dim+';margin-bottom:8px;font-weight:600;">📍 插入位置</div>';
+        var belowActive = st.posMode === 'below';
+        var pickActive = st.posMode === 'pick';
+        html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">';
+        html += '<span data-pca-action="clone-pos-mode" data-pca-mode="below" style="padding:5px 12px;font-size:12px;cursor:pointer;border:1px solid '+(belowActive?pcaC.info:pcaC.border)+';border-radius:6px;background:'+(belowActive?'rgba('+pcaHexToRgb(pcaC.info)+',0.12)':'transparent')+';color:'+(belowActive?pcaC.info:pcaC.dim)+';font-weight:'+(belowActive?'700':'500')+';">⬇ 插入到本条目下面</span>';
+        html += '<span data-pca-action="clone-pos-mode" data-pca-mode="pick" style="padding:5px 12px;font-size:12px;cursor:pointer;border:1px solid '+(pickActive?pcaC.info:pcaC.border)+';border-radius:6px;background:'+(pickActive?'rgba('+pcaHexToRgb(pcaC.info)+',0.12)':'transparent')+';color:'+(pickActive?pcaC.info:pcaC.dim)+';font-weight:'+(pickActive?'700':'500')+';">📌 选择位置</span>';
+        html += '</div>';
+        if (belowActive) {
+            html += '<div style="font-size:11px;color:'+pcaC.dim+';line-height:1.5;background:rgba('+pcaHexToRgb(pcaC.info)+',0.06);border-left:3px solid '+pcaC.infoDim+';padding:8px 10px;border-radius:4px;">将插入到 <span style="color:'+pcaC.text+';">「'+pcaEsc(sourceEntry.name)+'」</span>（#'+(sourceIdx+1)+'）的下一行（即 #'+(sourceIdx+2)+'）</div>';
+        } else {
+            // 列表选择
+            html += '<div style="border:1px solid '+pcaC.border+';border-radius:6px;max-height:280px;overflow-y:auto;background:'+pcaC.input+';">';
+            // 顶部插入位
+            var topActive = st.pickedIndex === 0;
+            html += '<div data-pca-action="clone-pick-pos" data-pca-pos="0" style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;background:'+(topActive?'rgba('+pcaHexToRgb(pcaC.info)+',0.15)':'transparent')+';border-bottom:1px dashed '+pcaC.border+';">';
+            html += '<span style="color:'+(topActive?pcaC.info:pcaC.dim)+';font-size:13px;">'+(topActive?'✓':'➕')+'</span>';
+            html += '<span style="font-size:11px;color:'+(topActive?pcaC.text:pcaC.dim)+';">插入到最顶部（#1）</span>';
+            html += '</div>';
+            entries.forEach(function(e, i) {
+                var isSrc = (i === sourceIdx);
+                html += '<div style="display:flex;align-items:center;gap:8px;padding:5px 10px;background:'+(isSrc?'rgba('+pcaHexToRgb(pcaC.gold)+',0.08)':'transparent')+';">';
+                html += '<span style="font-size:10px;color:'+pcaC.dim+';min-width:24px;text-align:right;flex-shrink:0;">#'+(i+1)+'</span>';
+                html += '<span style="color:'+(e.enabled?pcaC.pink:pcaC.off)+';font-size:10px;flex-shrink:0;">'+(e.enabled?'●':'○')+'</span>';
+                html += '<span style="font-size:12px;color:'+pcaC.text+';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+pcaEsc(e.name)+(isSrc?' <span style="color:'+pcaC.gold+';font-size:10px;">（源）</span>':'')+'</span>';
+                html += '</div>';
+                var afterPos = i + 1;
+                var afterActive = st.pickedIndex === afterPos;
+                html += '<div data-pca-action="clone-pick-pos" data-pca-pos="'+afterPos+'" style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;background:'+(afterActive?'rgba('+pcaHexToRgb(pcaC.info)+',0.15)':'transparent')+';border-bottom:1px dashed '+pcaC.border+';">';
+                html += '<span style="color:'+(afterActive?pcaC.info:pcaC.dim)+';font-size:13px;">'+(afterActive?'✓':'➕')+'</span>';
+                html += '<span style="font-size:11px;color:'+(afterActive?pcaC.text:pcaC.dim)+';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">在「'+pcaEsc(e.name)+'」之后（#'+(afterPos+1)+'）</span>';
+                html += '</div>';
+            });
+            html += '</div>';
+        }
+        html += '</div>';
+        html += '</div>'; // 主体结束
+        // 底部按钮
+        html += '<div style="padding:12px 20px;border-top:1px solid '+pcaC.border+';display:flex;justify-content:flex-end;gap:8px;flex-shrink:0;">';
+        html += '<button data-pca-action="clone-cancel" class="pca-btn" style="padding:6px 14px;font-size:12px;">取消</button>';
+        html += '<button data-pca-action="clone-confirm" class="pca-btn-primary pca-glow" style="padding:6px 18px;font-size:12px;">✓ 加入新建队列</button>';
+        html += '</div>';
+        html += '</div>';
+        overlay.innerHTML = html;
+        // 输入框 → 状态同步
+        var nameEl = overlay.querySelector('#pca-clone-name');
+        var idEl = overlay.querySelector('#pca-clone-id');
+        if (nameEl) nameEl.addEventListener('input', function(){ st.newName = nameEl.value; });
+        if (idEl) idEl.addEventListener('input', function(){ st.newId = idEl.value.trim(); });
+    }
+
+    function close() { overlay.remove(); }
+
+    overlay.addEventListener('click', function(e) {
+        var t = e.target;
+        // 点遮罩空白处 → 取消
+        if (t === overlay) { close(); callback(null); return; }
+        var act = null;
+        var node = t;
+        while (node && node !== overlay) {
+            if (node.getAttribute && node.getAttribute('data-pca-action')) { act = node.getAttribute('data-pca-action'); break; }
+            node = node.parentElement;
+        }
+        if (!act) return;
+        if (act === 'clone-cancel') { close(); callback(null); return; }
+        if (act === 'clone-newid') {
+            st.newId = pcaGenEntryId();
+            // 同步从 DOM 当前 name 输入回 st（避免渲染重置）
+            var ne = overlay.querySelector('#pca-clone-name'); if (ne) st.newName = ne.value;
+            render();
+            return;
+        }
+        if (act === 'clone-pos-mode') {
+            var ne2 = overlay.querySelector('#pca-clone-name'); if (ne2) st.newName = ne2.value;
+            var ie2 = overlay.querySelector('#pca-clone-id'); if (ie2) st.newId = ie2.value.trim();
+            st.posMode = node.getAttribute('data-pca-mode') || 'below';
+            render();
+            return;
+        }
+        if (act === 'clone-pick-pos') {
+            var ne3 = overlay.querySelector('#pca-clone-name'); if (ne3) st.newName = ne3.value;
+            var ie3 = overlay.querySelector('#pca-clone-id'); if (ie3) st.newId = ie3.value.trim();
+            st.pickedIndex = parseInt(node.getAttribute('data-pca-pos'), 10) || 0;
+            render();
+            return;
+        }
+        if (act === 'clone-confirm') {
+            // 同步 DOM → st
+            var ne4 = overlay.querySelector('#pca-clone-name'); if (ne4) st.newName = ne4.value;
+            var ie4 = overlay.querySelector('#pca-clone-id'); if (ie4) st.newId = ie4.value.trim();
+            // 校验
+            if (!st.newName) { toastr.warning('名称不能为空'); return; }
+            if (!st.newId) { toastr.warning('ID 不能为空'); return; }
+            var insertIndex = (st.posMode === 'below') ? (sourceIdx + 1) : st.pickedIndex;
+            if (insertIndex < 0) insertIndex = 0;
+            if (insertIndex > entries.length) insertIndex = entries.length;
+            close();
+            callback({ newName: st.newName, newId: st.newId, insertIndex: insertIndex });
+            return;
+        }
+    });
+
+    if (existingDialog) existingDialog.appendChild(overlay); else doc.body.appendChild(overlay);
+    render();
+    // 自动聚焦名称输入框
+    setTimeout(function(){
+        var ne = overlay.querySelector('#pca-clone-name');
+        if (ne) { ne.focus(); ne.select(); }
+    }, 30);
 }
 
 // 队列：编辑（覆盖）
@@ -4174,6 +4387,7 @@ function pcaBindPanel() {
             case 'edit-new-entry': pcaEditDoNewEntry(); break;
             case 'edit-toggle': if (idx >= 0) pcaEditDoToggle(idx); break;
             case 'edit-edit': if (idx >= 0) pcaEditDoEdit(idx); break;
+            case 'edit-clone': if (idx >= 0) pcaEditDoClone(idx); break;
             case 'edit-delete': if (idx >= 0) pcaEditDoDelete(idx); break;
             case 'edit-move':
                 if (idx >= 0) {
