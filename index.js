@@ -1379,8 +1379,8 @@ function pcaRenderEdit() {
             html += '<div style="text-align:center;padding:20px;color:'+pcaC.dim+';">没有匹配的条目</div>';
         }
     }
-    // 底部留白防止队列 dock 遮挡（折叠时只留 52px，展开时留够）
-    html += '<div style="height:'+(pcaState.editQueueExpanded&&pcaState.editPending.length>0?'min(280px,45dvh)':'52px')+';flex-shrink:0;"></div>';
+    // 底部留白防止队列 dock 遮挡（折叠时只留 52px，展开时与 dock 自身 max-height 一致）
+    html += '<div style="height:'+(pcaState.editQueueExpanded&&pcaState.editPending.length>0?'min(360px,60dvh)':'52px')+';flex-shrink:0;"></div>';
     wrap.innerHTML = html;
 
     // 搜索 / 筛选输入绑定
@@ -1443,7 +1443,8 @@ function pcaRenderEditDock() {
     var dock = doc.createElement('div');
     dock.id = 'pca-edit-dock';
     // 留出右侧 14px 不遮挡滚动条
-    dock.style.cssText = 'position:absolute;left:0;right:14px;bottom:0;background:'+pcaC.card2+';border-top:1px solid '+pcaC.goldDim+';box-shadow:0 -4px 16px rgba(0,0,0,0.4);z-index:10;max-height:'+(expanded?'min(280px,50dvh)':'44px')+';display:flex;flex-direction:column;transition:max-height 0.2s;';
+    // overflow:hidden 防止内部 flex 列表撑出 dock 导致底栏按钮被裁掉；max-height 给手机更多空间
+    dock.style.cssText = 'position:absolute;left:0;right:14px;bottom:0;background:'+pcaC.card2+';border-top:1px solid '+pcaC.goldDim+';box-shadow:0 -4px 16px rgba(0,0,0,0.4);z-index:10;max-height:'+(expanded?'min(360px,60dvh)':'44px')+';display:flex;flex-direction:column;overflow:hidden;transition:max-height 0.2s;';
 
     var html = '';
     // 顶栏（点击切换展开/收起）
@@ -1465,7 +1466,8 @@ function pcaRenderEditDock() {
     html += '</div>';
 
     if (expanded) {
-        html += '<div style="flex:1;overflow-y:auto;padding:0 18px 8px;">';
+        // min-height:0 让 flex 列表区可以收缩；否则 flex:1 默认 min-height:auto 会被内容撑高，挤掉底栏
+        html += '<div style="flex:1;min-height:0;overflow-y:auto;padding:0 18px 8px;">';
         pcaState.editPending.forEach(function(p, pi) {
             var label = '';
             var color = pcaC.text;
@@ -1834,8 +1836,8 @@ function pcaRenderMigrate() {
         });
     }
 
-    // 底部留白，避免被悬浮队列遮挡（手机端用 dvh 兜底，避免占用过多可视区）
-    html += '<div style="height:'+(pcaState.migrateQueueExpanded?'min(280px,45dvh)':'52px')+';flex-shrink:0;"></div>';
+    // 底部留白，避免被悬浮队列遮挡（与 dock 自身 max-height 一致）
+    html += '<div style="height:'+(pcaState.migrateQueueExpanded?'min(400px,60dvh)':'52px')+';flex-shrink:0;"></div>';
 
     wrap.innerHTML = html;
 
@@ -1889,7 +1891,8 @@ function pcaRenderQueueDock() {
     var dock = doc.createElement('div');
     dock.id = 'pca-queue-dock';
     // 留出右侧空间不遮挡内容区滚动条（约 12-14px）
-    dock.style.cssText = 'position:absolute;left:0;right:14px;bottom:0;background:'+pcaC.card2+';border-top:1px solid '+pcaC.migrateBorder+';box-shadow:0 -4px 16px rgba(0,0,0,0.4);z-index:10;max-height:'+(expanded?'min(320px,50dvh)':'44px')+';display:flex;flex-direction:column;transition:max-height 0.2s;';
+    // overflow:hidden 防止内部 flex 列表撑出 dock 导致底栏按钮被裁掉；max-height 给手机更多空间
+    dock.style.cssText = 'position:absolute;left:0;right:14px;bottom:0;background:'+pcaC.card2+';border-top:1px solid '+pcaC.migrateBorder+';box-shadow:0 -4px 16px rgba(0,0,0,0.4);z-index:10;max-height:'+(expanded?'min(400px,60dvh)':'44px')+';display:flex;flex-direction:column;overflow:hidden;transition:max-height 0.2s;';
 
     var html = '';
     // 顶部条
@@ -1909,8 +1912,8 @@ function pcaRenderQueueDock() {
     html += '</div>';
 
     if (expanded) {
-        // 列表
-        html += '<div style="flex:1;overflow-y:auto;padding:0 18px 8px;">';
+        // 列表 — min-height:0 让 flex 列表区可以收缩；否则 flex:1 默认 min-height:auto 会被内容撑高，挤掉底栏
+        html += '<div style="flex:1;min-height:0;overflow-y:auto;padding:0 18px 8px;">';
         if (pendingCount === 0) {
             html += '<div style="text-align:center;padding:20px;color:'+pcaC.dim+';font-size:12px;">从上方点击「📦 迁移」按钮添加条目</div>';
         } else {
