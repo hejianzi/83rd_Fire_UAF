@@ -146,11 +146,22 @@ function pcaGetHeaders() {
     return h;
 }
 
+// 移动端识别：UA 命中或屏幕窄于 720px
+function pcaIsMobile() {
+    try {
+        var w = pcaGetWin() || window;
+        if (w && w.innerWidth && w.innerWidth < 720) return true;
+        var ua = (w && w.navigator && w.navigator.userAgent) || '';
+        return /Android|iPhone|iPad|iPod|Mobile|MicroMessenger/i.test(ua);
+    } catch(e) { return false; }
+}
 function pcaDiffLines(oldText, newText) {
     var oldLines = (oldText || '').split('\n');
     var newLines = (newText || '').split('\n');
     var m = oldLines.length, n = newLines.length;
-    if (m * n > 500000) return pcaDiffSimple(oldLines, newLines);
+    // 移动端阈值降级：500000 → 60000，保护主线程
+    var threshold = pcaIsMobile() ? 60000 : 500000;
+    if (m * n > threshold) return pcaDiffSimple(oldLines, newLines);
     var dp = [];
     for (var i = 0; i <= m; i++) { dp[i] = []; for (var j = 0; j <= n; j++) dp[i][j] = 0; }
     for (var i2 = 1; i2 <= m; i2++) {
@@ -224,9 +235,12 @@ var pcaState = {
     activeTab:'diff', compared:false,
     allPresets:null,
     migrateSearch:'',
+    migrateSearchChips:[],         // 多关键词 chip 列表（OR 搜索），与 migrateSearch 同时生效
     migrateSelected:{},
     migrateNotes:[],
     migrateFavActive:false,
+    migrateFavMultiSelect:false,   // 收藏夹多选模式开关
+    migrateFavSelected:{},         // 多选模式下被选中的 tag 名 -> true
     migratePending:[],
     migrateUndoStack:[],
     migrateFilterStatus:'all',
@@ -1785,8 +1799,20 @@ function pcaGetMigrateFilterNames() {
         var favNames = pcaGetActiveFavNames();
         if (favNames && favNames.length > 0) names = favNames.slice();
     }
+    // chip 关键词（来自 收藏夹「搜索选中」联动 / 搜索框回车）
+    if (pcaState.migrateSearchChips && pcaState.migrateSearchChips.length) {
+        pcaState.migrateSearchChips.forEach(function(c) {
+            if (c && names.indexOf(c) < 0) names.push(c);
+        });
+    }
+    // 当前搜索框内还没回车的内容也参与过滤；并支持回车（\n）作为分隔符（回退方案 F）
     if (pcaState.migrateSearch) {
-        names.push(pcaState.migrateSearch);
+        var raw = String(pcaState.migrateSearch);
+        var parts = raw.indexOf('\n') >= 0 ? raw.split(/\r?\n/) : [raw];
+        parts.forEach(function(p) {
+            p = p.trim();
+            if (p && names.indexOf(p) < 0) names.push(p);
+        });
     }
     return names;
 }
@@ -1889,29 +1915,75 @@ function pcaRenderMigrate() {
     html += '<input id="pca-note-input" class="pca-search-input" style="flex:1;min-width:140px;" placeholder="输入条目名字加入「'+pcaEsc(activeName)+'」" />';
     html += '<button data-pca-action="note-add" style="padding:5px 14px;background:'+(activeGid?activeColor:pcaC.migrate)+';color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;white-space:nowrap;cursor:pointer;">+ 添加到本组</button>';
     html += '</div>';
-    html += '<div id="pca-notes-list" style="display:flex;flex-wrap:wrap;min-height:24px;">';
+    // 多选模式工具栏
+    var favMulti = !!pcaState.migrateFavMultiSelect;
+    var favSel = pcaState.migrateFavSelected || {};
+    var favSelCount = 0;
+    activeNotes.forEach(function(n){ if (favSel[n]) favSelCount++; });
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px;font-size:11px;">';
+    if (!favMulti) {
+        html += '<span data-pca-action="fav-multi-enter" style="color:'+pcaC.textDim+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;cursor:pointer;" title="进入多选模式以批量搜索/删除">☐ 多选</span>';
+        html += '<span style="color:'+pcaC.textDim+';font-size:10px;">点击 tag 直接搜索 · 进入多选可批量搜索/删除</span>';
+    } else {
+        html += '<span data-pca-action="fav-multi-exit" style="color:'+pcaC.textDim+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;cursor:pointer;">✕ 退出多选</span>';
+        html += '<span data-pca-action="fav-multi-select-all" style="color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;cursor:pointer;" title="全选本组（当前可见）所有 tag">☑ 全选可见</span>';
+        html += '<span data-pca-action="fav-multi-invert" style="color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;cursor:pointer;">⇅ 反选</span>';
+        html += '<span data-pca-action="fav-multi-clear" style="color:'+pcaC.textDim+';border:1px solid '+pcaC.border+';border-radius:6px;padding:3px 10px;cursor:pointer;">○ 取消选择</span>';
+        html += '<span style="flex:1;"></span>';
+        html += '<span style="color:'+activeColor+';font-weight:600;">已选 '+favSelCount+' / '+activeNotes.length+'</span>';
+        if (favSelCount > 0) {
+            html += '<span data-pca-action="fav-multi-search" style="color:#fff;background:'+pcaC.accent+';border:1px solid '+pcaC.accent+';border-radius:6px;padding:3px 12px;cursor:pointer;font-weight:600;" title="把已选 tag 作为关键词搜索（OR 命中）">🔍 搜索选中</span>';
+            html += '<span data-pca-action="fav-multi-delete" style="color:'+pcaC.danger+';border:1px solid rgba('+pcaHexToRgb(pcaC.danger)+',0.4);border-radius:6px;padding:3px 12px;cursor:pointer;" title="从本组删除已选 tag">🗑 删除选中</span>';
+        }
+    }
+    html += '</div>';
+
+    html += '<div id="pca-notes-list" style="display:flex;flex-wrap:wrap;min-height:24px;gap:4px;">';
     if (activeNotes.length === 0) {
         html += '<span style="color:'+pcaC.dim+';font-size:12px;padding:4px;">「'+pcaEsc(activeName)+'」暂无收藏</span>';
     } else {
         activeNotes.forEach(function(note, ni) {
-            html += '<span class="pca-note-tag" style="border-color:'+activeColor+'55;">';
-            html += '<span class="pca-note-find" data-pca-action="note-find" data-pca-idx="'+ni+'" title="单独搜索此条目">🔍</span> ';
+            var isSel = !!favSel[note];
+            // 整个 tag 可点击：非多选模式 = 直接搜索此 tag；多选模式 = 切换勾选
+            var tagAction = favMulti ? 'fav-tag-toggle' : 'fav-tag-search';
+            var bg = isSel ? ('rgba('+pcaHexToRgb(activeColor)+',0.18)') : pcaC.surfaceHi;
+            var bd = isSel ? activeColor : (activeColor + '55');
+            var col = isSel ? activeColor : pcaC.text;
+            html += '<span class="pca-note-tag" data-pca-action="'+tagAction+'" data-pca-idx="'+ni+'" data-pca-note="'+pcaAttr(note)+'" style="cursor:pointer;background:'+bg+';border:1px solid '+bd+';color:'+col+';transition:background .15s,border-color .15s;" title="'+(favMulti?'点击切换勾选':'点击搜索此条目（加入关键词 chip）')+'">';
+            if (favMulti) html += '<span style="font-size:11px;color:'+(isSel?activeColor:pcaC.textDim)+';flex-shrink:0;">'+(isSel?'☑':'☐')+'</span> ';
             html += '<span class="pca-note-text">'+pcaEsc(note)+'</span>';
-            html += ' <span class="pca-note-x" data-pca-action="note-del" data-pca-idx="'+ni+'" title="从本组移除">×</span>';
             html += '</span>';
         });
     }
     html += '</div></div>';
 
-    // 搜索 + 序号跳转 + 筛选
-    html += '<div style="display:flex;gap:10px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">';
-    html += '<div style="flex:1;min-width:140px;"><input id="pca-migrate-search" class="pca-search-input" placeholder="🔍 按条目名字搜索..." value="'+pcaAttr(pcaState.migrateSearch)+'" /></div>';
+    // 搜索 + 序号跳转 + 筛选（chip 多关键词 OR 搜索）
+    var chips = pcaState.migrateSearchChips || [];
+    html += '<div style="background:'+pcaC.surface+';border:1px solid '+pcaC.border+';border-radius:8px;padding:8px 10px;margin-bottom:10px;">';
+    // chip 列表
+    if (chips.length > 0) {
+        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;align-items:center;">';
+        html += '<span style="font-size:10px;color:'+pcaC.textDim+';margin-right:4px;">关键词:</span>';
+        chips.forEach(function(c, ci) {
+            html += '<span class="pca-search-chip" style="display:inline-flex;align-items:center;gap:4px;background:rgba('+pcaHexToRgb(pcaC.accent)+',0.12);border:1px solid '+pcaC.accentDim+';border-radius:12px;padding:2px 4px 2px 10px;font-size:11px;color:'+pcaC.accent+';max-width:180px;">';
+            html += '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+pcaAttr(c)+'">'+pcaEsc(c)+'</span>';
+            html += '<span data-pca-action="search-chip-del" data-pca-idx="'+ci+'" title="移除此关键词" style="cursor:pointer;color:'+pcaC.textDim+';font-size:13px;line-height:1;padding:0 4px;">×</span>';
+            html += '</span>';
+        });
+        html += '<span data-pca-action="search-chip-clear" style="font-size:10px;color:'+pcaC.danger+';cursor:pointer;margin-left:4px;border-bottom:1px dashed '+pcaC.danger+';" title="清空所有关键词">清空</span>';
+        html += '</div>';
+    }
+    // 搜索框 + 跳转 + 计数
+    html += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">';
+    html += '<div style="flex:1;min-width:140px;position:relative;">';
+    html += '<input id="pca-migrate-search" class="pca-search-input" placeholder="🔍 按条目名搜索（回车 = 添加为关键词，多个关键词 OR 搜索）" value="'+pcaAttr(pcaState.migrateSearch)+'" />';
+    html += '</div>';
     html += '<div style="display:flex;align-items:center;gap:4px;flex-shrink:0;"><span style="font-size:11px;color:'+pcaC.dim+';">跳到</span><input id="pca-migrate-jump" type="number" min="1" max="'+leftEntries.length+'" placeholder="#" style="width:70px;padding:5px 8px;background:'+pcaC.input+';color:'+pcaC.text+';border:1px solid '+pcaC.border+';border-radius:4px;font-size:12px;outline:none;text-align:center;" title="输入序号后回车，跳转并高亮条目" /></div>';
     html += '<span style="font-size:12px;color:'+pcaC.dim+';white-space:nowrap;">'+filteredLeft.length+' / '+leftEntries.length+' 条</span>';
-    if (pcaState.migrateSearch || pcaState.migrateFavActive || pcaState.migrateFilterStatus!=='all' || pcaState.migrateFilterDiff!=='all') {
-        html += '<span data-pca-action="migrate-clear-filter" style="font-size:11px;color:'+pcaC.danger+';border:1px solid rgba(224,96,112,0.3);border-radius:6px;padding:3px 10px;white-space:nowrap;">✕ 清除筛选</span>';
+    if (pcaState.migrateSearch || (chips.length>0) || pcaState.migrateFavActive || pcaState.migrateFilterStatus!=='all' || pcaState.migrateFilterDiff!=='all') {
+        html += '<span data-pca-action="migrate-clear-filter" style="font-size:11px;color:'+pcaC.danger+';border:1px solid rgba('+pcaHexToRgb(pcaC.danger)+',0.3);border-radius:6px;padding:3px 10px;white-space:nowrap;cursor:pointer;">✕ 清除筛选</span>';
     }
-    html += '</div>';
+    html += '</div></div>';
 
     // 状态筛选 + 差异筛选 按钮组
     function btnStyle(active, color) {
@@ -2031,6 +2103,29 @@ function pcaRenderMigrate() {
             if (pcaComposing) return;
             pcaState.migrateSearch = this.value;
             pcaRenderMigrate();
+        });
+        // 回车 = 把当前输入提交为 chip；Backspace 在空输入框时 = 删最后一个 chip
+        searchInput.addEventListener('keydown', function(e) {
+            if (pcaComposing) return;
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                var v = (this.value || '').trim();
+                if (!v) return;
+                if (!pcaState.migrateSearchChips) pcaState.migrateSearchChips = [];
+                // 支持一次粘贴多行：回车时把每行都拆成 chip
+                v.split(/\r?\n/).forEach(function(p){
+                    p = p.trim();
+                    if (p && pcaState.migrateSearchChips.indexOf(p) < 0) pcaState.migrateSearchChips.push(p);
+                });
+                pcaState.migrateSearch = '';
+                pcaRenderMigrate();
+            } else if (e.key === 'Backspace' && !this.value) {
+                if (pcaState.migrateSearchChips && pcaState.migrateSearchChips.length > 0) {
+                    e.preventDefault();
+                    pcaState.migrateSearchChips.pop();
+                    pcaRenderMigrate();
+                }
+            }
         });
     }
     var jumpInput = pcaGetDoc().querySelector('#pca-migrate-jump');
@@ -3453,26 +3548,127 @@ function pcaShowAboutPopover(anchorEl) {
     });
 }
 
-function pcaShowToast(type, msg) {
-    // 优先用顶层 window 的 toastr（因为脚本可能跑在 iframe 里，本地 window 可能没 toastr）
-    try {
-        var win = pcaGetWin();
-        var t = (win && win.toastr) ? win.toastr : ((typeof toastr !== 'undefined') ? toastr : null);
-        if (t && typeof t[type] === 'function') {
-            t[type](msg, '', { timeOut: 1500 });
-            return;
-        }
-    } catch(_e) {}
-    // 兜底：自己造一个浮动提示（贴到顶层 document）
+// ============ 自定义 Toast 弹窗系统 ============
+// 设计要点：
+//   1. 挂在顶层 document.body（而不是插件根），z-index=2147483647，确保盖住 SillyTavern 的 dialog/插件面板
+//   2. 底色明显区别于面板（用 surfaceHi 比 panel surface 亮一档 + 暗血红光晕），细窄风格
+//   3. 顶部居中，多条堆叠，自动消失或点 × 关闭
+//   4. 同文案 1s 内重复触发自动合并 ×N
+function pcaToastContainer() {
+    var doc = pcaGetDoc();
+    var c = doc.querySelector('#pca-toast-container');
+    if (c) return c;
+    c = doc.createElement('div');
+    c.id = 'pca-toast-container';
+    c.style.cssText = 'position:fixed!important;top:24px!important;left:50%!important;transform:translateX(-50%)!important;display:flex!important;flex-direction:column!important;gap:8px!important;z-index:2147483647!important;pointer-events:none!important;max-width:min(360px,90vw)!important;width:max-content!important;';
+    doc.body.appendChild(c);
+    return c;
+}
+function pcaShowToast(type, msg, opts) {
+    opts = opts || {};
     try {
         var doc = pcaGetDoc();
+        var container = pcaToastContainer();
+
+        // 同文案合并 ×N
+        var existing = container.querySelector('[data-pca-toast-msg="'+pcaAttr(msg)+'"][data-pca-toast-type="'+type+'"]');
+        if (existing) {
+            var count = parseInt(existing.getAttribute('data-pca-toast-count') || '1', 10) + 1;
+            existing.setAttribute('data-pca-toast-count', String(count));
+            var badge = existing.querySelector('.pca-toast-count');
+            if (badge) { badge.textContent = '×'+count; badge.style.display = 'inline-block'; }
+            // 重置消失计时
+            var oldTimer = existing._pcaTimer;
+            if (oldTimer) clearTimeout(oldTimer);
+            var dur = (opts.duration != null) ? opts.duration : (type === 'error' ? 4000 : (type === 'warning' ? 3000 : 2200));
+            existing._pcaTimer = setTimeout(function(){ pcaToastDismiss(existing); }, dur);
+            return;
+        }
+
+        // 颜色映射（根据当前主题动态取）
+        var accentMap = { success: pcaC.success, error: pcaC.danger, warning: pcaC.warning, info: pcaC.accent };
+        var iconMap   = { success: '✓', error: '✕', warning: '⚠', info: 'ℹ' };
+        var sideColor = accentMap[type] || pcaC.accent;
+        var icon = iconMap[type] || 'ℹ';
+
         var box = doc.createElement('div');
-        var color = type === 'success' ? '#6ecf8a' : (type === 'warning' ? '#e0a070' : (type === 'error' ? '#e06070' : '#8eb8e5'));
-        box.textContent = msg;
-        box.style.cssText = 'position:fixed!important;left:50%!important;top:14%!important;transform:translateX(-50%)!important;background:rgba(20,18,28,0.95)!important;color:#fff!important;border:1px solid '+color+'!important;border-radius:8px!important;padding:8px 18px!important;font-size:13px!important;z-index:2147483647!important;box-shadow:0 4px 16px rgba(0,0,0,0.4)!important;pointer-events:none!important;';
-        doc.body.appendChild(box);
-        setTimeout(function(){ try { box.remove(); } catch(_e){} }, 1500);
-    } catch(_e2) {}
+        box.setAttribute('data-pca-toast-msg', msg);
+        box.setAttribute('data-pca-toast-type', type);
+        box.setAttribute('data-pca-toast-count', '1');
+        box.style.cssText = [
+            'position:relative',
+            'display:flex',
+            'align-items:flex-start',
+            'gap:10px',
+            'background:'+pcaC.surfaceHi+'!important',
+            'color:'+pcaC.text+'!important',
+            'border:1px solid '+pcaC.borderHi+'!important',
+            'border-left:3px solid '+sideColor+'!important',
+            'border-radius:8px',
+            'padding:10px 30px 10px 12px',
+            'font-size:13px',
+            'line-height:1.45',
+            'font-family:'+(pcaC._fontSans || "'Segoe UI',sans-serif"),
+            'box-shadow:0 8px 24px rgba(0,0,0,0.6),0 0 0 1px rgba('+pcaHexToRgb(sideColor)+',0.18)',
+            'pointer-events:auto',
+            'opacity:0',
+            'transform:translateY(-12px)',
+            'transition:opacity .22s ease,transform .22s cubic-bezier(.2,.8,.2,1)',
+            'word-break:break-word',
+            'min-width:200px'
+        ].join(';') + ';';
+
+        var html = '';
+        html += '<span style="color:'+sideColor+';font-size:14px;font-weight:700;line-height:1.45;flex-shrink:0;">'+icon+'</span>';
+        html += '<span style="flex:1;min-width:0;">'+pcaEsc(msg)+' <span class="pca-toast-count" style="display:none;font-size:11px;color:'+pcaC.textDim+';margin-left:4px;"></span></span>';
+        if (opts.action && opts.action.label) {
+            html += '<span class="pca-toast-action" style="flex-shrink:0;font-size:12px;color:'+pcaC.accent+';font-weight:600;cursor:pointer;padding:0 4px;border-bottom:1px dashed '+pcaC.accentDim+';">'+pcaEsc(opts.action.label)+'</span>';
+        }
+        html += '<span class="pca-toast-close" style="position:absolute;top:6px;right:8px;width:16px;height:16px;line-height:14px;text-align:center;font-size:14px;color:'+pcaC.textDim+';cursor:pointer;border-radius:3px;user-select:none;" title="关闭">×</span>';
+        box.innerHTML = html;
+
+        // 关闭按钮
+        var closeBtn = box.querySelector('.pca-toast-close');
+        if (closeBtn) closeBtn.addEventListener('click', function(){ pcaToastDismiss(box); });
+        // 操作回调
+        if (opts.action && typeof opts.action.onClick === 'function') {
+            var actBtn = box.querySelector('.pca-toast-action');
+            if (actBtn) actBtn.addEventListener('click', function(){
+                try { opts.action.onClick(); } catch(_e){}
+                pcaToastDismiss(box);
+            });
+        }
+
+        container.appendChild(box);
+        // 入场动画
+        requestAnimationFrame(function(){
+            box.style.opacity = '1';
+            box.style.transform = 'translateY(0)';
+        });
+
+        var dur = (opts.duration != null) ? opts.duration : (type === 'error' ? 4000 : (type === 'warning' ? 3000 : 2200));
+        if (dur > 0) {
+            box._pcaTimer = setTimeout(function(){ pcaToastDismiss(box); }, dur);
+        }
+    } catch(_e) {
+        // 极端兜底：调用浏览器 alert
+        try { console.warn('[pcaShowToast] failed', _e); } catch(_ex){}
+    }
+}
+function pcaToastDismiss(box) {
+    if (!box || !box.parentNode) return;
+    try {
+        if (box._pcaTimer) { clearTimeout(box._pcaTimer); box._pcaTimer = null; }
+        box.style.opacity = '0';
+        box.style.transform = 'translateY(-12px)';
+        setTimeout(function(){ try { box.remove(); } catch(_e){} }, 240);
+    } catch(_e) {}
+}
+// 便捷别名
+function pcaToast(msg, opts) {
+    opts = opts || {};
+    var type = opts.type || 'info';
+    pcaShowToast(type, msg, opts);
 }
 
 function pcaCopyToClipboard(text, successMsg) {
@@ -3799,7 +3995,7 @@ async function pcaDoCompare() {
     if(tabs)tabs.style.display='flex';if(footer)footer.style.display='flex';
     doc.querySelector('#pca-tab-diff').textContent='开关差异 ('+result.diffs.length+')';
     pcaSwitchTab('diff');pcaRefreshDebug();
-    toastr.success('对比完成：'+result.diffs.length+' 差异，'+result.newItems.length+' 新增');
+    pcaShowToast('success','对比完成：'+result.diffs.length+' 差异，'+result.newItems.length+' 新增');
 }
 
 function pcaSwitchTab(tab) {
@@ -3821,8 +4017,8 @@ async function pcaDoSave() {
     if(!pcaState.compared){toastr.warning('请先对比');return;}
     var name = pcaState.rightName;
     var ok = await pcaSyncAndSave(pcaState.rightPresetData, name);
-    if (!ok) { toastr.error('保存失败'); pcaRefreshDebug(); return; }
-    toastr.success('已覆盖保存「'+name+'」✓');
+    if (!ok) { pcaShowToast('error','保存失败'); pcaRefreshDebug(); return; }
+    pcaShowToast('success','已覆盖保存「'+name+'」✓');
     pcaRefreshDebug();
 }
 
@@ -3831,8 +4027,8 @@ async function pcaDoSaveAs() {
     var n=prompt('请输入新预设名称：',pcaState.rightName+'_修改版');
     if(!n||!n.trim())return;
     var ok=await pcaSavePresetToFile(pcaState.rightPresetData,n.trim());
-    if(ok){toastr.success('已另存为「'+n.trim()+'」');toastr.info('如列表未刷新请手动刷新页面');}
-    else toastr.error('保存失败');
+    if(ok){pcaShowToast('success','已另存为「'+n.trim()+'」');pcaShowToast('info','如列表未刷新请手动刷新页面');}
+    else pcaShowToast('error','保存失败');
     pcaRefreshDebug();
 }
 
@@ -4166,9 +4362,8 @@ async function pcaDoMigrateApply() {
 
     var name = pcaState.rightName;
     var ok = await pcaSyncAndSave(preset, name);
-    if (!ok) { toastr.error('保存失败'); pcaRefreshDebug(); return; }
-
-    toastr.success('已迁移 ' + appliedCount + ' 个条目到「' + name + '」✓');
+    if (!ok) { pcaShowToast('error','保存失败'); pcaRefreshDebug(); return; }
+    pcaShowToast('success','已迁移 ' + appliedCount + ' 个条目到「' + name + '」✓', { duration: 3500 });
     pcaState.migratePending = [];
     pcaState.migrateUndoStack = [];
     pcaState.rightEntries = pcaExtract(preset);
@@ -4280,9 +4475,8 @@ async function pcaDoEditApply() {
 
     var ok = await pcaSyncAndSave(preset, presetName);
     pcaRefreshDebug();
-    if (!ok) { toastr.error('保存失败'); return; }
-
-    toastr.success('已应用 ' + appliedCount + ' 个修改到「' + presetName + '」✓');
+    if (!ok) { pcaShowToast('error','保存失败'); return; }
+    pcaShowToast('success','已应用 ' + appliedCount + ' 个修改到「' + presetName + '」✓', { duration: 3500 });
     pcaState.editPending = [];
     pcaState.editUndoStack = [];
     // 刷新条目列表（左/右）
@@ -4307,7 +4501,7 @@ function pcaOpenPanel() {
     var rememberLeft = (pcaState && pcaState.leftName) || '';
     var rememberRight = (pcaState && pcaState.rightName) || '';
     var rememberTab = (pcaState && pcaState.activeTab) || 'diff';
-    pcaState={leftName:rememberLeft,rightName:rememberRight,leftEntries:[],rightEntries:[],diffs:[],newItems:[],rightPresetData:null,leftPresetData:null,originalValues:{},activeTab:rememberTab,compared:false,allPresets:null,migrateSearch:'',migrateSelected:{},migrateNotes:savedNotes,migrateFavActive:false,migratePending:[],migrateUndoStack:[],migrateFilterStatus:'all',migrateFilterDiff:'all',migrateQueueExpanded:false,migrateFavGroups:(pcaState&&pcaState.migrateFavGroups)||{},activeFavGroupId:(pcaState&&pcaState.activeFavGroupId)||'',confHelpExpanded:false,editorClipText:(pcaState&&pcaState.editorClipText)||'',editorClipFrom:(pcaState&&pcaState.editorClipFrom)||'',editorState:null,editorDrafts:{},editorWrap:(pcaState&&typeof pcaState.editorWrap==='boolean')?pcaState.editorWrap:true,editTarget:'right',editPending:[],editUndoStack:[],editSearch:'',editOnlyNew:false,editQueueExpanded:false};
+    pcaState={leftName:rememberLeft,rightName:rememberRight,leftEntries:[],rightEntries:[],diffs:[],newItems:[],rightPresetData:null,leftPresetData:null,originalValues:{},activeTab:rememberTab,compared:false,allPresets:null,migrateSearch:'',migrateSearchChips:[],migrateSelected:{},migrateNotes:savedNotes,migrateFavActive:false,migrateFavMultiSelect:false,migrateFavSelected:{},migratePending:[],migrateUndoStack:[],migrateFilterStatus:'all',migrateFilterDiff:'all',migrateQueueExpanded:false,migrateFavGroups:(pcaState&&pcaState.migrateFavGroups)||{},activeFavGroupId:(pcaState&&pcaState.activeFavGroupId)||'',confHelpExpanded:false,editorClipText:(pcaState&&pcaState.editorClipText)||'',editorClipFrom:(pcaState&&pcaState.editorClipFrom)||'',editorState:null,editorDrafts:{},editorWrap:(pcaState&&typeof pcaState.editorWrap==='boolean')?pcaState.editorWrap:true,editTarget:'right',editPending:[],editUndoStack:[],editSearch:'',editOnlyNew:false,editQueueExpanded:false};
     try {
         var popup=new SillyTavern.Popup(html,SillyTavern.POPUP_TYPE.TEXT,'',{large:true,wide:true,allowVerticalScrolling:true});
         popup.show();
@@ -4665,10 +4859,21 @@ function pcaBindPanel() {
                 break;
             case 'migrate-clear-filter':
                 pcaState.migrateSearch = '';
+                pcaState.migrateSearchChips = [];
                 pcaState.migrateFavActive = false;
                 pcaState.migrateFilterStatus = 'all';
                 pcaState.migrateFilterDiff = 'all';
                 pcaState.activeFavGroupId = '';
+                pcaRenderMigrate();
+                break;
+            case 'search-chip-del':
+                if (idx >= 0 && pcaState.migrateSearchChips && idx < pcaState.migrateSearchChips.length) {
+                    pcaState.migrateSearchChips.splice(idx, 1);
+                    pcaRenderMigrate();
+                }
+                break;
+            case 'search-chip-clear':
+                pcaState.migrateSearchChips = [];
                 pcaRenderMigrate();
                 break;
 
@@ -4712,8 +4917,105 @@ function pcaBindPanel() {
                     pcaRenderMigrate();
                 })();
                 break;
+            // 整个 tag 可点击 → 单击搜索（注入到 chip）
+            case 'fav-tag-search':
+                (function() {
+                    var noteVal = target.getAttribute('data-pca-note') || '';
+                    if (!noteVal) return;
+                    if (!pcaState.migrateSearchChips) pcaState.migrateSearchChips = [];
+                    if (pcaState.migrateSearchChips.indexOf(noteVal) < 0) {
+                        pcaState.migrateSearchChips.push(noteVal);
+                    }
+                    // 清掉收藏夹筛选（避免和 chip 冲突）
+                    pcaState.migrateFavActive = false;
+                    pcaRenderMigrate();
+                })();
+                break;
+            // 多选模式下点 tag = 切换勾选
+            case 'fav-tag-toggle':
+                (function() {
+                    var noteVal = target.getAttribute('data-pca-note') || '';
+                    if (!noteVal) return;
+                    if (!pcaState.migrateFavSelected) pcaState.migrateFavSelected = {};
+                    if (pcaState.migrateFavSelected[noteVal]) delete pcaState.migrateFavSelected[noteVal];
+                    else pcaState.migrateFavSelected[noteVal] = true;
+                    pcaRenderMigrate();
+                })();
+                break;
+            case 'fav-multi-enter':
+                pcaState.migrateFavMultiSelect = true;
+                pcaState.migrateFavSelected = {};
+                pcaRenderMigrate();
+                break;
+            case 'fav-multi-exit':
+                pcaState.migrateFavMultiSelect = false;
+                pcaState.migrateFavSelected = {};
+                pcaRenderMigrate();
+                break;
+            case 'fav-multi-select-all':
+                (function() {
+                    if (!pcaState.migrateFavSelected) pcaState.migrateFavSelected = {};
+                    var arrAll = pcaGetActiveFavNames() || [];
+                    arrAll.forEach(function(n){ pcaState.migrateFavSelected[n] = true; });
+                    pcaRenderMigrate();
+                })();
+                break;
+            case 'fav-multi-invert':
+                (function() {
+                    if (!pcaState.migrateFavSelected) pcaState.migrateFavSelected = {};
+                    var arrInv = pcaGetActiveFavNames() || [];
+                    arrInv.forEach(function(n){
+                        if (pcaState.migrateFavSelected[n]) delete pcaState.migrateFavSelected[n];
+                        else pcaState.migrateFavSelected[n] = true;
+                    });
+                    pcaRenderMigrate();
+                })();
+                break;
+            case 'fav-multi-clear':
+                pcaState.migrateFavSelected = {};
+                pcaRenderMigrate();
+                break;
+            // 把已选 tag 注入到搜索 chip → 联动条目过滤
+            case 'fav-multi-search':
+                (function() {
+                    var sel = pcaState.migrateFavSelected || {};
+                    var picked = Object.keys(sel).filter(function(k){ return sel[k]; });
+                    if (picked.length === 0) { pcaShowToast('warning','请先勾选 tag'); return; }
+                    if (!pcaState.migrateSearchChips) pcaState.migrateSearchChips = [];
+                    var added = 0;
+                    picked.forEach(function(n){
+                        if (pcaState.migrateSearchChips.indexOf(n) < 0) {
+                            pcaState.migrateSearchChips.push(n); added++;
+                        }
+                    });
+                    // 退出多选并切回搜索视角
+                    pcaState.migrateFavMultiSelect = false;
+                    pcaState.migrateFavSelected = {};
+                    pcaState.migrateFavActive = false;
+                    pcaRenderMigrate();
+                    pcaShowToast('success','已添加 '+added+' 个关键词，命中条目已展示');
+                })();
+                break;
+            // 从本组删除已选 tag（删除按钮已迁入多选模式）
+            case 'fav-multi-delete':
+                (function() {
+                    var sel = pcaState.migrateFavSelected || {};
+                    var picked = Object.keys(sel).filter(function(k){ return sel[k]; });
+                    if (picked.length === 0) { pcaShowToast('warning','请先勾选 tag'); return; }
+                    pcaShowConfirm('确定从「'+pcaEsc(pcaState.activeFavGroupId ? ((pcaState.migrateFavGroups[pcaState.activeFavGroupId]||{}).name||'?') : '未分组')+'」移除 '+picked.length+' 个 tag 吗？<br><br>（不影响实际预设条目）', function(ok){
+                        if (!ok) return;
+                        var gidD = pcaState.activeFavGroupId || '';
+                        picked.forEach(function(n){ pcaRemoveFromFavGroup(n, gidD); });
+                        pcaState.migrateFavSelected = {};
+                        pcaRenderMigrate();
+                        pcaShowToast('success','已移除 '+picked.length+' 个 tag');
+                    });
+                })();
+                break;
             case 'fav-tab-pick':
                 pcaState.activeFavGroupId = target.getAttribute('data-pca-gid') || '';
+                // 切换分组时清空多选状态（避免跨组残留）
+                if (pcaState.migrateFavMultiSelect) pcaState.migrateFavSelected = {};
                 pcaRenderMigrate();
                 break;
             case 'fav-mgr-open':
