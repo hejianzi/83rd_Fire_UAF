@@ -38,7 +38,7 @@ body{background:#0d0d0f;color:#e0dfe3;font-family:'Segoe UI',sans-serif;min-heig
 <!-- 加载界面 -->
 <div id="pca-standalone-loader">
     <div class="pca-sl-title">✧ 预设对比助手 · 离线版</div>
-    <div class="pca-sl-sub">加载预设 JSON 文件后即可使用全部功能（编辑后自动保存到浏览器缓存）</div>
+    <div class="pca-sl-sub">加载预设 JSON 文件后即可使用全部功能 · 修改后自动写回原文件</div>
 
     <div class="pca-sl-drop" id="pca-sl-drop">
         <div class="pca-sl-drop-icon">📂</div>
@@ -64,6 +64,7 @@ body{background:#0d0d0f;color:#e0dfe3;font-family:'Segoe UI',sans-serif;min-heig
 
     <div style="display:flex;gap:10px;margin-top:8px">
         <button class="pca-sl-btn pca-sl-btn-primary" id="pca-sl-open" style="display:none">✦ 打开预设对比助手</button>
+        <button class="pca-sl-btn" id="pca-sl-reselect" style="display:none">🔄 重新选择文件</button>
     </div>
 
     <div id="pca-sl-cache-info" style="margin-top:12px;display:none;text-align:center">
@@ -84,6 +85,7 @@ var PCA_STANDALONE = true;
 var PCA_REMOTE_VERSION = '2.8.3';
 var PCA_REMOTE_SCRIPT = 'https://cdn.jsdelivr.net/gh/hejianzi/83rd_Fire_UAF@' + PCA_REMOTE_VERSION + '/indexxx.js';
 var _pcaPresetStore = {};
+var _pcaFileHandles = {};  // name -> FileSystemFileHandle，用于写回单个文件
 var _pcaFolderHandle = null;
 var _pcaDB = null;
 
@@ -118,11 +120,52 @@ function _pcaDBDel(s, k) {
 
 // ---- 缓存 ----
 async function _pcaCachePresets() { if (_pcaDB) await _pcaDBPut('presets','all',_pcaPresetStore); }
+async function _pcaCacheFileHandles() { if (_pcaDB) await _pcaDBPut('meta','fileHandles',_pcaFileHandles); }
 async function _pcaRestoreCache() {
     if (!_pcaDB) return false;
     var c = await _pcaDBGet('presets','all');
     if (c && typeof c==='object' && Object.keys(c).length) { Object.assign(_pcaPresetStore,c); _pcaUpdateSelect(); return true; }
     return false;
+}
+
+// ---- 写回磁盘 ----
+async function _pcaEnsureWritePermission(handle) {
+    if (!handle || !handle.queryPermission) return true;
+    try {
+        var q = await handle.queryPermission({mode:'readwrite'});
+        if (q === 'granted') return true;
+        var r = await handle.requestPermission({mode:'readwrite'});
+        return r === 'granted';
+    } catch(e) { return false; }
+}
+async function _pcaWriteFileToDisk(name, data) {
+    var fh = _pcaFileHandles[name];
+    if (!fh && _pcaFolderHandle) {
+        try { fh = await _pcaFolderHandle.getFileHandle(name + '.json', { create: true }); } catch(e) {}
+    }
+    if (!fh) return false;
+    try {
+        if (!await _pcaEnsureWritePermission(fh)) return false;
+        var writable = await fh.createWritable();
+        await writable.write(JSON.stringify(data, null, 4));
+        await writable.close();
+        return true;
+    } catch(e) {
+        console.error('写回磁盘失败:', name, e);
+        return false;
+    }
+}
+async function _pcaDeleteFileFromDisk(name) {
+    delete _pcaFileHandles[name];
+    if (!_pcaFolderHandle) return false;
+    try {
+        if (!await _pcaEnsureWritePermission(_pcaFolderHandle)) return false;
+        await _pcaFolderHandle.removeEntry(name + '.json');
+        return true;
+    } catch(e) {
+        console.error('删除磁盘文件失败:', name, e);
+        return false;
+    }
 }
 
 // ---- SillyTavern Mock ----
@@ -144,14 +187,19 @@ var SillyTavern = {
                     getCompletionPresetByName: function(name) { return this.getPresetByName(name); },
                     findPreset: function(name) { var n=Object.keys(_pcaPresetStore); var i=n.indexOf(name); return i>=0?i:null; },
                     savePreset: async function(name, data) {
-                        _pcaPresetStore[name] = JSON.parse(JSON.stringify(data));
+                        var d = JSON.parse(JSON.stringify(data));
+                        _pcaPresetStore[name] = d;
                         _pcaUpdateSelect();
                         await _pcaCachePresets();
+                        var ok = await _pcaWriteFileToDisk(name, d);
+                        if (!ok) console.warn('预设已保存到缓存，但写回磁盘失败:', name);
                     },
                     deletePreset: async function(name) {
                         delete _pcaPresetStore[name];
                         _pcaUpdateSelect();
                         await _pcaCachePresets();
+                        await _pcaDeleteFileFromDisk(name);
+                        await _pcaCacheFileHandles();
                     }
                 };
             },
@@ -177,14 +225,31 @@ SillyTavern.Popup.prototype.show = function() {
 
 // ---- 拦截 fetch ----
 var _origFetch = window.fetch;
-window.fetch = function(url, opts) {
+window.fetch = async function(url, opts) {
     var u = (typeof url==='string') ? url : '';
     if (u.indexOf('/api/presets/save')!==-1) {
-        try { var b=JSON.parse(opts.body); if(b.name&&b.preset){_pcaPresetStore[b.name]=b.preset;_pcaUpdateSelect();_pcaCachePresets();} } catch(e){}
+        try {
+            var b=JSON.parse(opts.body);
+            if(b.name&&b.preset){
+                _pcaPresetStore[b.name]=b.preset;
+                _pcaUpdateSelect();
+                await _pcaCachePresets();
+                await _pcaWriteFileToDisk(b.name, b.preset);
+            }
+        } catch(e){}
         return Promise.resolve(new Response('{"ok":true}',{status:200,headers:{'Content-Type':'application/json'}}));
     }
     if (u.indexOf('/api/presets/delete')!==-1) {
-        try { var b=JSON.parse(opts.body); if(b.name){delete _pcaPresetStore[b.name];_pcaUpdateSelect();_pcaCachePresets();} } catch(e){}
+        try {
+            var b=JSON.parse(opts.body);
+            if(b.name){
+                delete _pcaPresetStore[b.name];
+                _pcaUpdateSelect();
+                await _pcaCachePresets();
+                await _pcaDeleteFileFromDisk(b.name);
+                await _pcaCacheFileHandles();
+            }
+        } catch(e){}
         return Promise.resolve(new Response('{"ok":true}',{status:200,headers:{'Content-Type':'application/json'}}));
     }
     if (u.indexOf('/api/settings/get')!==-1) {
@@ -207,13 +272,15 @@ function _pcaUpdateSelect() {
 }
 
 // ---- 文件加载 ----
-async function _pcaLoadFiles(files) {
+// items: Array of { file: File, handle?: FileSystemFileHandle }
+async function _pcaLoadFiles(items) {
     var loaded=0, errors=0;
     var statusEl=document.querySelector('#pca-sl-status');
     var filesEl=document.querySelector('#pca-sl-files');
     filesEl.innerHTML='';
-    for (var i=0;i<files.length;i++) {
-        var f=files[i];
+    for (var i=0;i<items.length;i++) {
+        var item=items[i];
+        var f=item.file||item; // 兼容直接传 File 的旧调用
         if (!f.name.endsWith('.json')) continue;
         try {
             var txt = await f.text();
@@ -225,6 +292,10 @@ async function _pcaLoadFiles(files) {
             }
             var name=f.name.replace(/\.json$/i,'');
             _pcaPresetStore[name]=data;
+            if (item.handle) {
+                _pcaFileHandles[name]=item.handle;
+                await _pcaEnsureWritePermission(item.handle);
+            }
             loaded++;
             filesEl.innerHTML+='<div class="pca-sl-file"><span class="pca-sl-file-name">'+name+'</span><span style="color:#8c8">✓</span></div>';
         } catch(e) {
@@ -234,22 +305,32 @@ async function _pcaLoadFiles(files) {
     }
     _pcaUpdateSelect();
     await _pcaCachePresets();
-    if(statusEl) statusEl.textContent='已加载 '+loaded+' 个预设'+(errors?'，'+errors+' 个失败':'');
-    if(loaded>0) document.querySelector('#pca-sl-open').style.display='';
+    await _pcaCacheFileHandles();
+    var hasDisk = _pcaFolderHandle || Object.keys(_pcaFileHandles).length>0;
+    var diskNote = hasDisk ? '（修改将自动写回磁盘）' : '（仅保存到浏览器缓存）';
+    if(statusEl) statusEl.textContent='已加载 '+loaded+' 个预设'+(errors?'，'+errors+' 个失败':'')+' '+diskNote;
+    if(loaded>0) {
+        document.querySelector('#pca-sl-open').style.display='';
+        document.querySelector('#pca-sl-reselect').style.display='';
+    }
     return loaded;
 }
 
 async function _pcaLoadFolder(handle, remember) {
-    var files=[];
+    var items=[];
     for await (var entry of handle.values()) {
-        if (entry.kind==='file'&&entry.name.endsWith('.json')) files.push(await entry.getFile());
+        if (entry.kind==='file'&&entry.name.endsWith('.json')) {
+            items.push({ file: await entry.getFile(), handle: entry });
+        }
     }
-    if (!files.length) { document.querySelector('#pca-sl-status').textContent='该文件夹没有 .json 文件'; return; }
-    var n = await _pcaLoadFiles(files);
-    if (n>0 && remember) {
-        _pcaFolderHandle=handle;
-        await _pcaDBPut('meta','folderHandle',handle);
-        await _pcaDBPut('meta','folderName',handle.name);
+    if (!items.length) { document.querySelector('#pca-sl-status').textContent='该文件夹没有 .json 文件'; return; }
+    var n = await _pcaLoadFiles(items);
+    if (n>0) {
+        _pcaFolderHandle=handle; // 始终保存句柄，以便本次会话内写回磁盘
+        if (remember) {
+            await _pcaDBPut('meta','folderHandle',handle);
+            await _pcaDBPut('meta','folderName',handle.name);
+        }
     }
 }
 
@@ -292,6 +373,11 @@ function _pcaOpenPanel() {
     }
 }
 
+function _pcaShowLoader() {
+    var loader=document.querySelector('#pca-standalone-loader');
+    if(loader){loader.style.display='';loader.classList.remove('hidden');}
+}
+
 // ---- 初始化 ----
 async function _pcaInit() {
     await _pcaLoadRemoteScript();
@@ -299,7 +385,10 @@ async function _pcaInit() {
 
     var cachedHandle=await _pcaDBGet('meta','folderHandle');
     var cachedName=await _pcaDBGet('meta','folderName');
+    var cachedFileHandles=await _pcaDBGet('meta','fileHandles');
+    if (cachedFileHandles && typeof cachedFileHandles==='object') _pcaFileHandles=cachedFileHandles;
     if (cachedHandle&&cachedName) {
+        _pcaFolderHandle = cachedHandle;
         var ci=document.querySelector('#pca-sl-cache-info');
         var cp=document.querySelector('#pca-sl-cache-path');
         if(ci&&cp){ci.style.display='';cp.textContent=cachedName;}
@@ -310,6 +399,7 @@ async function _pcaInit() {
         var n=Object.keys(_pcaPresetStore).length;
         document.querySelector('#pca-sl-status').textContent='已从缓存恢复 '+n+' 个预设';
         document.querySelector('#pca-sl-open').style.display='';
+        document.querySelector('#pca-sl-reselect').style.display='';
     }
 
     // 拖放
@@ -318,30 +408,93 @@ async function _pcaInit() {
     drop.addEventListener('dragleave',function(){drop.classList.remove('dragover');});
     drop.addEventListener('drop',async function(e){
         e.preventDefault();drop.classList.remove('dragover');
-        var items=e.dataTransfer.items,files=[];
-        if(items&&items.length){
-            for(var i=0;i<items.length;i++){
-                if(items[i].webkitGetAsEntry){var en=items[i].webkitGetAsEntry();if(en&&en.isDirectory){files=files.concat(await _pcaReadDirEntry(en));continue;}}
-                var f=items[i].getAsFile();if(f)files.push(f);
+        var dtItems=e.dataTransfer.items, loadItems=[];
+        if(dtItems&&dtItems.length){
+            for(var i=0;i<dtItems.length;i++){
+                // 优先尝试 File System Access API 获取句柄
+                if(dtItems[i].getAsFileSystemHandle){
+                    try{
+                        var handle=await dtItems[i].getAsFileSystemHandle();
+                        if(handle.kind==='directory'){
+                            // 拖入文件夹：用文件夹句柄加载
+                            _pcaPresetStore={};_pcaFileHandles={};_pcaUpdateSelect();
+                            _pcaFolderHandle=handle;
+                            var folderItems=[];
+                            for await(var entry of handle.values()){
+                                if(entry.kind==='file'&&entry.name.endsWith('.json')){
+                                    folderItems.push({file:await entry.getFile(),handle:entry});
+                                }
+                            }
+                            if(folderItems.length) await _pcaLoadFiles(folderItems);
+                            return;
+                        }
+                        if(handle.kind==='file'&&handle.name.endsWith('.json')){
+                            loadItems.push({file:await handle.getFile(),handle:handle});
+                            continue;
+                        }
+                    }catch(ex){}
+                }
+                // 降级
+                if(dtItems[i].webkitGetAsEntry){
+                    var en=dtItems[i].webkitGetAsEntry();
+                    if(en&&en.isDirectory){
+                        var dirFiles=await _pcaReadDirEntry(en);
+                        dirFiles.forEach(function(f){loadItems.push({file:f});});
+                        continue;
+                    }
+                }
+                var f=dtItems[i].getAsFile();
+                if(f) loadItems.push({file:f});
             }
-        } else files=Array.from(e.dataTransfer.files);
-        if(files.length) await _pcaLoadFiles(files);
+        } else {
+            Array.from(e.dataTransfer.files).forEach(function(f){loadItems.push({file:f});});
+        }
+        if(loadItems.length) {
+            _pcaPresetStore={};_pcaFileHandles={};_pcaUpdateSelect();
+            await _pcaLoadFiles(loadItems);
+        }
     });
     drop.addEventListener('click',function(){document.querySelector('#pca-sl-pick-files').click();});
 
     // 选择文件
-    document.querySelector('#pca-sl-pick-files').addEventListener('click',function(e){
+    document.querySelector('#pca-sl-pick-files').addEventListener('click',async function(e){
         e.stopPropagation();
-        var inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.multiple=true;
-        inp.addEventListener('change',function(){if(inp.files.length)_pcaLoadFiles(Array.from(inp.files));});
-        inp.click();
+        if (window.showOpenFilePicker) {
+            try {
+                var handles = await window.showOpenFilePicker({
+                    multiple: true,
+                    types: [{ description: 'JSON', accept: {'application/json':['.json']} }]
+                });
+                if (handles.length) {
+                    _pcaPresetStore={};_pcaFileHandles={};_pcaUpdateSelect();
+                    var items=[];
+                    for (var i=0;i<handles.length;i++) {
+                        items.push({ file: await handles[i].getFile(), handle: handles[i] });
+                    }
+                    await _pcaLoadFiles(items);
+                }
+            } catch(ex) { if(ex.name!=='AbortError') console.error(ex); }
+        } else {
+            // 降级：老浏览器用 input[type=file]，但无法写回磁盘
+            var inp=document.createElement('input');inp.type='file';inp.accept='.json';inp.multiple=true;
+            inp.addEventListener('change',function(){
+                if(inp.files.length){
+                    _pcaPresetStore={};_pcaFileHandles={};_pcaUpdateSelect();
+                    _pcaLoadFiles(Array.from(inp.files));
+                }
+            });
+            inp.click();
+        }
     });
 
     // 选择文件夹
     document.querySelector('#pca-sl-pick-folder').addEventListener('click',async function(){
         if(!window.showDirectoryPicker){alert('当前浏览器不支持文件夹选择（需要 Chrome/Edge 86+）。\n请改用拖放或文件选择。');return;}
         try{
-            var h=await window.showDirectoryPicker({mode:'read'});
+            var h=await window.showDirectoryPicker({mode:'readwrite'});
+            // 清空旧数据再加载新文件夹
+            _pcaPresetStore={};
+            _pcaUpdateSelect();
             document.querySelector('#pca-sl-folder-section').style.display='';
             await _pcaLoadFolder(h, document.querySelector('#pca-sl-remember').checked);
         }catch(e){if(e.name!=='AbortError')console.error(e);}
@@ -354,20 +507,32 @@ async function _pcaInit() {
     document.querySelector('#pca-sl-cache-reload').addEventListener('click',async function(){
         if(!cachedHandle)return;
         try{
-            var perm=await cachedHandle.requestPermission({mode:'read'});
-            if(perm==='granted'){_pcaPresetStore={};await _pcaLoadFolder(cachedHandle,true);}
+            var perm=await cachedHandle.requestPermission({mode:'readwrite'});
+            if(perm==='granted'){_pcaPresetStore={};_pcaFileHandles={};await _pcaLoadFolder(cachedHandle,true);}
             else alert('需要授予文件夹读取权限');
         }catch(e){
             alert('无法访问之前的文件夹，请重新选择。');
-            await _pcaDBDel('meta','folderHandle');await _pcaDBDel('meta','folderName');
+            await _pcaDBDel('meta','folderHandle');await _pcaDBDel('meta','folderName');await _pcaDBDel('meta','fileHandles');
             document.querySelector('#pca-sl-cache-info').style.display='none';
         }
     });
 
+    // 重新选择文件（清空当前数据，回到初始状态）
+    document.querySelector('#pca-sl-reselect').addEventListener('click',async function(){
+        await _pcaDBDel('meta','folderHandle');await _pcaDBDel('meta','folderName');await _pcaDBDel('meta','fileHandles');await _pcaDBDel('presets','all');
+        _pcaPresetStore={};_pcaFileHandles={};_pcaFolderHandle=null;_pcaUpdateSelect();
+        document.querySelector('#pca-sl-cache-info').style.display='none';
+        document.querySelector('#pca-sl-status').textContent='请重新选择文件或文件夹';
+        document.querySelector('#pca-sl-open').style.display='none';
+        document.querySelector('#pca-sl-reselect').style.display='none';
+        document.querySelector('#pca-sl-files').innerHTML='';
+        document.querySelector('#pca-sl-folder-section').style.display='none';
+    });
+
     // 清除缓存
     document.querySelector('#pca-sl-cache-clear').addEventListener('click',async function(){
-        await _pcaDBDel('meta','folderHandle');await _pcaDBDel('meta','folderName');await _pcaDBDel('presets','all');
-        _pcaPresetStore={};_pcaFolderHandle=null;_pcaUpdateSelect();
+        await _pcaDBDel('meta','folderHandle');await _pcaDBDel('meta','folderName');await _pcaDBDel('meta','fileHandles');await _pcaDBDel('presets','all');
+        _pcaPresetStore={};_pcaFileHandles={};_pcaFolderHandle=null;_pcaUpdateSelect();
         document.querySelector('#pca-sl-cache-info').style.display='none';
         document.querySelector('#pca-sl-status').textContent='缓存已清除';
         document.querySelector('#pca-sl-open').style.display='none';
