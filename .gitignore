@@ -1,27 +1,5 @@
-# 只允许 indexxx.js 上传，其它一概忽略
-# （.bat 脚本、源码、临时文件 全部本地保留，不进 GitHub）
+# 忽略所有文件
+*
 
-# 源码（不公开）
-index.js
-
-# 所有 .bat 脚本（个人工具）
-*.bat
-
-# Node 相关
-node_modules/
-package.json
-package-lock.json
-npm-debug.log*
-
-# 编辑器/系统垃圾
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-*.tmp
-*.log
-
-# 备份文件
-*.bak
-*.backup
-*~
+# 只允许 indexxx.js
+!indexxx.js
